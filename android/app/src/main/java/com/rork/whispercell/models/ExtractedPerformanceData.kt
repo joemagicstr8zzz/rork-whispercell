@@ -8,5 +8,6 @@ data class ExtractedPerformanceData(
     val bestMatches: BestMatchSummary,
     val confabulation: ConfabulationPayload? = null,
     val confidence: Float,
-    val notes: List<String> = emptyList()
+    val notes: List<String> = emptyList(),
+    val extractionSource: String = "Rule fallback"
 )

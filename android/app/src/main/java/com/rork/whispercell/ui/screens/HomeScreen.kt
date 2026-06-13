@@ -98,8 +98,8 @@ import com.rork.whispercell.viewmodels.WhisperCellViewModel
 private enum class MainTab(val label: String, val icon: ImageVector) {
     Performance("Performance", Icons.Filled.Mic),
     Review("Review", Icons.Filled.Article),
-    Profiles("Profiles", Icons.Filled.Tune),
-    Channels("Channels", Icons.Filled.Route),
+    Profiles("Routines", Icons.Filled.Tune),
+    Channels("Outputs", Icons.Filled.Route),
     Inject("Inject", Icons.Filled.Hub),
     Logs("Logs", Icons.Filled.Podcasts),
     Settings("Settings", Icons.Filled.Settings),
@@ -312,18 +312,19 @@ private fun PerformanceScreen(
         }
         item {
             SectionCard(title = "Current capture", icon = Icons.Filled.Bolt) {
-                InfoRow("Active profile", state.activeProfile.name)
-                InfoRow("Start Phrase", state.activeProfile.startPhrase)
-                InfoRow("Stop Phrase", state.activeProfile.stopPhrase)
-                InfoRow("Active channels", state.activeChannels.joinToString { it.name }.ifBlank { "No active channels" })
+                InfoRow("Active routine", state.activeProfile.name)
+                InfoRow("Global Start Phrase", primaryStartPhrase(state))
+                InfoRow("Global Stop Phrase", primaryStopPhrase(state))
+                InfoRow("Routine outputs", state.activeChannels.joinToString { it.name.removeSuffix(" Channel") }.ifBlank { "No active outputs" })
                 InfoRow("Inject status", state.injectStatus.label)
                 InfoRow("Inject endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" })
                 InfoRow("Notification", state.notificationState)
             }
         }
+        item { TranscriptMonitorCard(state = state) }
         item {
             SectionCard(title = "Live intelligence", icon = Icons.Filled.Article) {
-                InfoRow("Last transcript line", state.lastTranscriptLine)
+                InfoRow("Extraction source", state.extractedData?.extractionSource ?: "Not run yet")
                 InfoRow("Last detected values", detectedSummary(state.extractedData))
                 InfoRow("Selected payload", state.selectedMatch?.payload ?: "Awaiting extraction")
                 InfoRow("Last published value", state.lastPublishedValue)
@@ -377,7 +378,7 @@ private fun SessionHero(state: PerformanceUiState) {
                 StatusChip(if (state.activeProfile.reviewModeEnabled) "Review Mode ON" else "Review Mode OFF")
                 StatusChip(if (state.activeProfile.fullAutomationEnabled) "Full Automation ON" else "Full Automation OFF")
                 StatusChip("Silence ignored")
-                StatusChip(state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Mock STT ready")
+                StatusChip(state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Mock ready")
             }
         }
     }
@@ -422,7 +423,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
         item {
             SectionCard(title = "Mock Transcript Mode", icon = Icons.Filled.Article) {
                 Text(
-                    "This is fully usable in preview: paste or load a transcript, run the active profile, review extracted values, and publish/simulate the selected Inject payload.",
+                    "This is fully usable in preview: paste or load a transcript, run the active routine, review extracted values, and publish/simulate the selected Inject payload.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -446,7 +447,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Run profile", Icons.Filled.CallSplit, Modifier.weight(1f), viewModel::runSelectedProfile)
+                    PrimaryControlButton("Run routine", Icons.Filled.CallSplit, Modifier.weight(1f), viewModel::runSelectedProfile)
                     PrimaryControlButton("Simulate Inject", Icons.Filled.Publish, Modifier.weight(1f), viewModel::simulateInjectPublish)
                 }
             }
@@ -465,7 +466,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
         }
         item {
             SectionCard(title = "Publish review", icon = Icons.Filled.Publish) {
-                InfoRow("Selected channel", state.selectedMatch?.channel?.name ?: "No channel selected")
+                InfoRow("Selected output", state.selectedMatch?.channel?.name ?: "No output selected")
                 InfoRow("Payload", state.selectedMatch?.payload ?: "Nothing ready")
                 InfoRow("Inject endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" })
                 Spacer(modifier = Modifier.height(10.dp))
@@ -489,22 +490,13 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            SectionCard(title = "Active Performance Profile", icon = Icons.Filled.Tune) {
-                InfoRow("Profile", state.activeProfile.name)
-                OutlinedTextField(
-                    value = state.activeProfile.startPhrase,
-                    onValueChange = viewModel::updateActiveProfileStartPhrase,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Start Phrase") },
-                    singleLine = true
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = state.activeProfile.stopPhrase,
-                    onValueChange = viewModel::updateActiveProfileStopPhrase,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Stop Phrase") },
-                    singleLine = true
+            SectionCard(title = "Active routine", icon = Icons.Filled.Tune) {
+                InfoRow("Routine", state.activeProfile.name)
+                InfoRow("Global Start Phrase", primaryStartPhrase(state))
+                InfoRow("Global Stop Phrase", primaryStopPhrase(state))
+                Text(
+                    "Start/stop phrases are shared across every routine so you only memorize one pair. This screen only decides what kind of information WhisperCell should extract and publish.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 SettingsToggleRow("Review Mode", state.activeProfile.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
@@ -512,7 +504,7 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
                 InfoRow("Speech engine", state.activeProfile.speechProviderId)
                 InfoRow("Inject output", "Fixed endpoint; payload is sent as the value field")
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("Active channels for this profile", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Outputs used by this routine", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 state.channels.forEach { channel ->
                     SettingsToggleRow(
                         label = channel.name,
@@ -541,10 +533,10 @@ private fun ChannelsScreen(state: PerformanceUiState, viewModel: WhisperCellView
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            SectionCard(title = "Channel matching", icon = Icons.Filled.Route) {
-                Text("These controls are live. Enable channels, change payload templates, test routing, and rerun extraction without leaving preview. Inject publishes selected payloads to a fixed endpoint as the value field.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                InfoRow("Active profile", state.activeProfile.name)
-                InfoRow("Selected payload", state.selectedMatch?.payload ?: "Run a channel test or extraction")
+            SectionCard(title = "Advanced output rules", icon = Icons.Filled.Route) {
+                Text("Outputs are the old channel rules: they decide which detected value becomes the Inject value. Most performers can just choose a routine and leave this alone.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                InfoRow("Active routine", state.activeProfile.name)
+                InfoRow("Selected payload", state.selectedMatch?.payload ?: "Run an output test or extraction")
             }
         }
         items(state.channels, key = { it.id }) { channel -> ChannelCard(channel, viewModel) }
@@ -629,22 +621,24 @@ private fun SettingsScreen(
     ) {
         item { PermissionSettingsCard(status = permissionStatus, onRequestPermissions = onRequestPermissions) }
         item {
-            SectionCard(title = "Start and stop phrases", icon = Icons.Filled.Tune) {
+            SectionCard(title = "Global start/stop phrases", icon = Icons.Filled.Tune) {
+                Text("These two phrases apply to every routine. Routines do not have separate trigger phrases anymore.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(8.dp))
                 SettingsToggleRow("Start Phrase enabled", state.settings.startPhraseEnabled, viewModel::toggleStartPhraseEnabled)
                 OutlinedTextField(
-                    value = state.activeProfile.startPhrase,
-                    onValueChange = viewModel::updateActiveProfileStartPhrase,
+                    value = primaryStartPhrase(state),
+                    onValueChange = viewModel::updateGlobalStartPhrase,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Start Phrase text") },
+                    label = { Text("Global Start Phrase") },
                     singleLine = true
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 SettingsToggleRow("Stop Phrase enabled", state.settings.stopPhraseEnabled, viewModel::toggleStopPhraseEnabled)
                 OutlinedTextField(
-                    value = state.activeProfile.stopPhrase,
-                    onValueChange = viewModel::updateActiveProfileStopPhrase,
+                    value = primaryStopPhrase(state),
+                    onValueChange = viewModel::updateGlobalStopPhrase,
                     modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Stop Phrase text") },
+                    label = { Text("Global Stop Phrase") },
                     singleLine = true
                 )
                 SettingsToggleRow("Remove phrases from transcript", state.settings.removeStartAndStopPhrases, viewModel::toggleRemovePhrases)
@@ -670,8 +664,10 @@ private fun SettingsScreen(
             }
         }
         item {
-            SectionCard(title = "OpenAI transcription", icon = Icons.Filled.Bolt) {
-                SettingsToggleRow("Enable OpenAI Transcription", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
+            SectionCard(title = "OpenAI / GPT extraction", icon = Icons.Filled.Bolt) {
+                Text("In preview, GPT runs on captured/mock transcript text. Live audio streaming still requires the native provider handoff.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsToggleRow("Enable GPT extraction", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
                 OutlinedTextField(
                     value = state.settings.openAiApiKey,
                     onValueChange = viewModel::updateOpenAiApiKey,
@@ -692,7 +688,7 @@ private fun SettingsScreen(
                 InfoRow("Validation", state.settings.openAiValidationStatus)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     SecondaryControlButton("Validate Key", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::validateOpenAiKey)
-                    PrimaryControlButton("Test transcription", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testOpenAiTranscription)
+                    PrimaryControlButton("Run GPT Test", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testOpenAiTranscription)
                 }
             }
         }
@@ -716,7 +712,7 @@ private fun SettingsScreen(
                 InfoRow("Validation", state.settings.elevenLabsValidationStatus)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     SecondaryControlButton("Validate Key", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::validateElevenLabsKey)
-                    PrimaryControlButton("Test transcription", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testElevenLabsTranscription)
+                    PrimaryControlButton("Run mock test", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testElevenLabsTranscription)
                 }
             }
         }
@@ -913,12 +909,11 @@ private fun DetectedItemRow(item: DetectedItem) {
 @Composable
 private fun ProfileCard(profile: PerformanceProfile, isActive: Boolean, onActivate: () -> Unit) {
     SectionCard(title = profile.name, icon = if (isActive) Icons.Filled.RadioButtonChecked else Icons.Filled.Tune) {
-        InfoRow("Start", profile.startPhrase)
-        InfoRow("Stop", profile.stopPhrase)
-        InfoRow("Categories", profile.activeCategories.joinToString { it.label })
+        InfoRow("Uses global phrases", "Same Start Phrase and Stop Phrase as every routine")
+        InfoRow("Extracts", profile.activeCategories.joinToString { it.label })
         InfoRow("Mode", if (profile.fullAutomationEnabled) "Full Automation" else "Review Mode")
         Button(onClick = onActivate, enabled = !isActive, modifier = Modifier.fillMaxWidth()) {
-            Text(if (isActive) "Active Profile" else "Activate Profile")
+            Text(if (isActive) "Active routine" else "Activate routine")
         }
     }
 }
@@ -936,12 +931,12 @@ private fun ChannelCard(channel: Channel, viewModel: WhisperCellViewModel) {
             label = { Text("Payload format") },
             singleLine = true
         )
-        InfoRow("Inject publish", "Posts this channel payload as the value field")
+        InfoRow("Inject publish", "Posts this output payload as the value field")
         SettingsToggleRow("Auto-publish", channel.autoPublish) { enabled -> viewModel.toggleChannelAutoPublish(channel.id, enabled) }
         InfoRow("Confidence threshold", "${(channel.confidenceThreshold * 100).toInt()}%")
         InfoRow("Cooldown", "${channel.cooldownSeconds} seconds")
         Spacer(modifier = Modifier.height(8.dp))
-        PrimaryControlButton("Test channel", Icons.Filled.Bolt, Modifier.fillMaxWidth()) { viewModel.testChannel(channel.id) }
+        PrimaryControlButton("Test output", Icons.Filled.Bolt, Modifier.fillMaxWidth()) { viewModel.testChannel(channel.id) }
     }
 }
 
@@ -1025,6 +1020,31 @@ private fun AlertCard(message: String) {
         Text(message, modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
     }
 }
+
+@Composable
+private fun TranscriptMonitorCard(state: PerformanceUiState) {
+    SectionCard(title = "Transcript monitor", icon = Icons.Filled.Podcasts) {
+        InfoRow("Speech provider status", state.providerActivity)
+        InfoRow("GPT / extraction status", state.aiActivity)
+        InfoRow("Last transcript line", state.lastTranscriptLine)
+        InfoRow("Raw captured transcript", state.rawCapturedTranscript.ifBlank { "Nothing captured yet" })
+        InfoRow("Cleaned transcript", state.currentTranscript.ifBlank { "Nothing processed yet" })
+        if (state.transcriptEvents.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Recent transcript events", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.height(6.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                state.transcriptEvents.take(5).forEach { event ->
+                    Text("• $event", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
+}
+
+private fun primaryStartPhrase(state: PerformanceUiState): String = state.settings.startPhrases.firstOrNull().orEmpty().ifBlank { "Picture this clearly for me" }
+
+private fun primaryStopPhrase(state: PerformanceUiState): String = state.settings.stopPhrases.firstOrNull().orEmpty().ifBlank { "Perfect" }
 
 private fun detectedSummary(data: ExtractedPerformanceData?): String {
     val items: List<DetectedItem> = data?.detectedItems.orEmpty()

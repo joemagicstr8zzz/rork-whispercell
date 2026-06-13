@@ -58,7 +58,7 @@ class WhisperCellViewModel : ViewModel() {
             channels = defaultChannels,
             speechProviders = ProviderCatalog.providers,
             activeChannels = defaultChannels.filter { it.id in defaultProfiles.first { profile -> profile.name == "Confabulation" }.activeChannelIds },
-            logs = listOf(logger.entry("WhisperCell is live in Mock Transcript Mode. Inject publishes to the fixed selection endpoint with a value field."))
+            logs = listOf(logger.entry("WhisperCell is ready. One global Start Phrase and one global Stop Phrase control every routine; routines only decide what value matters."))
         )
     )
     val uiState: StateFlow<PerformanceUiState> = _uiState.asStateFlow()
@@ -86,10 +86,18 @@ class WhisperCellViewModel : ViewModel() {
             val state: PerformanceUiState = _uiState.value
             mockSpeechProvider.startSession(configFrom(state))
             transcriptBuffer.clear()
+            _uiState.update { current ->
+                current.copy(
+                    providerActivity = providerReadinessMessage(current),
+                    aiActivity = "Waiting for captured speech before extraction.",
+                    rawCapturedTranscript = "",
+                    transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Session started. Waiting for Start Phrase: ${primaryStartPhrase(current)}")
+                )
+            }
             setState(SessionState.BackgroundReady, "Background session started. Preview uses Mock Transcript Mode; native foreground service is ready for Android Studio handoff.")
             delay(250)
-            val nextState: SessionState = if (state.activeProfile.startMode == StartMode.AlwaysCapturingAfterSessionStarts) SessionState.Capturing else SessionState.WaitingForStartPhrase
-            val message: String = if (nextState == SessionState.Capturing) "Capturing immediately for ${state.activeProfile.name}." else "Listening for natural start phrase: ${state.activeProfile.startPhrase}"
+            val nextState: SessionState = if (state.settings.startPhraseEnabled) SessionState.WaitingForStartPhrase else SessionState.Capturing
+            val message: String = if (nextState == SessionState.Capturing) "Capturing immediately. Start Phrase is off." else "Listening for global Start Phrase: ${primaryStartPhrase(state)}"
             setState(nextState, message)
         }
     }
@@ -133,12 +141,16 @@ class WhisperCellViewModel : ViewModel() {
         _uiState.update { state ->
             state.copy(
                 currentTranscript = "",
+                rawCapturedTranscript = "",
                 lastTranscriptLine = "No transcript yet.",
+                transcriptEvents = emptyList(),
                 extractedData = null,
                 selectedMatch = null,
                 lastPublishedValue = "Nothing published yet.",
                 lastInjectUrl = "",
                 injectStatus = if (state.settings.injectEnabled) InjectStatus.Ready else InjectStatus.NotConfigured,
+                providerActivity = providerReadinessMessage(state),
+                aiActivity = "GPT not run yet. Rule fallback ready.",
                 logs = listOf(logger.entry(privacyManager.clearSessionNotice(), LogLevel.Success)),
                 errorMessage = null
             )
@@ -194,13 +206,39 @@ class WhisperCellViewModel : ViewModel() {
     }
 
     fun updateActiveProfileStartPhrase(value: String) {
-        updateActiveProfile("Start phrase updated") { it.copy(startPhrase = value) }
-        _uiState.update { state -> state.copy(settings = state.settings.copy(startPhrases = listOf(value).filter { it.isNotBlank() })) }
+        updateGlobalStartPhrase(value)
     }
 
     fun updateActiveProfileStopPhrase(value: String) {
-        updateActiveProfile("Stop phrase updated") { it.copy(stopPhrase = value) }
-        _uiState.update { state -> state.copy(settings = state.settings.copy(stopPhrases = listOf(value).filter { it.isNotBlank() })) }
+        updateGlobalStopPhrase(value)
+    }
+
+    fun updateGlobalStartPhrase(value: String) {
+        val cleanValue: String = value.trimStart()
+        _uiState.update { state ->
+            val updatedProfiles: List<PerformanceProfile> = state.profiles.map { it.copy(startPhrase = cleanValue) }
+            state.copy(
+                settings = state.settings.copy(startPhrases = listOf(cleanValue).filter { it.isNotBlank() }),
+                activeProfile = state.activeProfile.copy(startPhrase = cleanValue),
+                profiles = updatedProfiles,
+                logs = prependLog(state.logs, logger.entry("Global Start Phrase updated for every routine.")),
+                errorMessage = null
+            )
+        }
+    }
+
+    fun updateGlobalStopPhrase(value: String) {
+        val cleanValue: String = value.trimStart()
+        _uiState.update { state ->
+            val updatedProfiles: List<PerformanceProfile> = state.profiles.map { it.copy(stopPhrase = cleanValue) }
+            state.copy(
+                settings = state.settings.copy(stopPhrases = listOf(cleanValue).filter { it.isNotBlank() }),
+                activeProfile = state.activeProfile.copy(stopPhrase = cleanValue),
+                profiles = updatedProfiles,
+                logs = prependLog(state.logs, logger.entry("Global Stop Phrase updated for every routine.")),
+                errorMessage = null
+            )
+        }
     }
 
     fun toggleActiveProfileFullAutomation(enabled: Boolean) {
@@ -262,7 +300,7 @@ class WhisperCellViewModel : ViewModel() {
     fun runSelectedProfile() {
         viewModelScope.launch {
             val state: PerformanceUiState = _uiState.value
-            val phraseWrapped: String = "${state.activeProfile.startPhrase}. ${state.mockTranscriptInput} ${state.activeProfile.stopPhrase}."
+            val phraseWrapped: String = "${primaryStartPhrase(state)}. ${state.mockTranscriptInput} ${primaryStopPhrase(state)}."
             handleFinalTranscript(phraseWrapped)
         }
     }
@@ -404,9 +442,11 @@ class WhisperCellViewModel : ViewModel() {
             if (channel == null) return@launch
             val extracted: ExtractedPerformanceData = state.extractedData ?: extractionService.extract(
                 transcript = state.mockTranscriptInput,
-                startPhrases = state.settings.startPhrases + state.activeProfile.startPhrase,
-                stopPhrases = state.settings.stopPhrases + state.activeProfile.stopPhrase,
-                aiEnabled = state.settings.openAiTranscriptionEnabled || state.settings.elevenLabsEnabled
+                startPhrases = state.settings.startPhrases,
+                stopPhrases = state.settings.stopPhrases,
+                aiEnabled = state.settings.openAiTranscriptionEnabled,
+                openAiApiKey = state.settings.openAiApiKey,
+                openAiModel = extractionModel(state)
             )
             val testProfile: PerformanceProfile = state.activeProfile.copy(activeChannelIds = listOf(channelId), routingBehavior = RoutingBehavior.BestConfidenceMatch)
             val match: ChannelMatch? = channelMatcher.match(testProfile, state.channels, extracted).firstOrNull()
@@ -440,7 +480,8 @@ class WhisperCellViewModel : ViewModel() {
 
     fun selectSpeechProvider(providerId: String) {
         updateSettings("Speech provider selected: $providerId") { it.copy(selectedSpeechProviderId = providerId) }
-        updateActiveProfile("Active profile speech provider updated") { it.copy(speechProviderId = providerId) }
+        updateActiveProfile("Active routine speech provider updated") { it.copy(speechProviderId = providerId) }
+        _uiState.update { state -> state.copy(providerActivity = providerReadinessMessage(state)) }
     }
 
     fun toggleOpenAiEnabled(enabled: Boolean) {
@@ -472,9 +513,10 @@ class WhisperCellViewModel : ViewModel() {
 
     fun validateOpenAiKey() {
         _uiState.update { state ->
-            val status: String = if (state.settings.openAiApiKey.length >= 12) "Looks valid for provider handoff" else "Enter a full API key"
+            val status: String = if (state.settings.openAiApiKey.length >= 12) "Key format looks usable. Run GPT Test to verify the API call." else "Enter a full API key"
             state.copy(
                 settings = state.settings.copy(openAiValidationStatus = status),
+                providerActivity = providerReadinessMessage(state),
                 logs = prependLog(state.logs, logger.entry("OpenAI key validation: $status", if (state.settings.openAiApiKey.length >= 12) LogLevel.Success else LogLevel.Warning)),
                 errorMessage = if (state.settings.openAiApiKey.length >= 12) null else "OpenAI key is too short."
             )
@@ -483,7 +525,14 @@ class WhisperCellViewModel : ViewModel() {
 
     fun testOpenAiTranscription() {
         viewModelScope.launch {
-            updateSettings("OpenAI transcription test routed through mock transcript in preview") { it.copy(openAiTranscriptionEnabled = true) }
+            updateSettings("GPT extraction test started with the current mock transcript") { it.copy(openAiTranscriptionEnabled = true) }
+            _uiState.update { state ->
+                state.copy(
+                    providerActivity = "Testing GPT extraction with mock transcript text. This is not live microphone transcription.",
+                    aiActivity = if (state.settings.openAiApiKey.isBlank()) "OpenAI key missing. Test will fall back to rules." else "Calling OpenAI now…",
+                    transcriptEvents = prependTranscriptEvent(state.transcriptEvents, "GPT test started from mock transcript: ${state.mockTranscriptInput}")
+                )
+            }
             processTranscript(_uiState.value.mockTranscriptInput, publishAfterMatch = false)
         }
     }
@@ -514,7 +563,14 @@ class WhisperCellViewModel : ViewModel() {
 
     fun testElevenLabsTranscription() {
         viewModelScope.launch {
-            updateSettings("ElevenLabs transcription test routed through mock transcript in preview") { it.copy(elevenLabsEnabled = true) }
+            updateSettings("ElevenLabs provider selected for native handoff; preview test uses mock transcript") { it.copy(elevenLabsEnabled = true) }
+            _uiState.update { state ->
+                state.copy(
+                    providerActivity = "ElevenLabs live STT is a native-provider handoff in this preview. Mock transcript text is being processed now.",
+                    aiActivity = "Using rule fallback unless OpenAI GPT extraction is enabled.",
+                    transcriptEvents = prependTranscriptEvent(state.transcriptEvents, "ElevenLabs preview test used mock transcript: ${state.mockTranscriptInput}")
+                )
+            }
             processTranscript(_uiState.value.mockTranscriptInput, publishAfterMatch = false)
         }
     }
@@ -533,11 +589,15 @@ class WhisperCellViewModel : ViewModel() {
 
     private fun handlePartialTranscript(text: String) {
         _uiState.update { state ->
-            val startPhrases: List<String> = if (state.settings.startPhraseEnabled) state.settings.startPhrases + state.activeProfile.startPhrase else emptyList()
+            val startPhrases: List<String> = if (state.settings.startPhraseEnabled) state.settings.startPhrases else emptyList()
+            val didStart: Boolean = state.sessionState == SessionState.WaitingForStartPhrase && startPhraseDetector.containsStartPhrase(text, startPhrases)
             state.copy(
                 lastTranscriptLine = text,
                 currentTranscript = text,
-                sessionState = if (state.sessionState == SessionState.WaitingForStartPhrase && startPhraseDetector.containsStartPhrase(text, startPhrases)) SessionState.Capturing else state.sessionState,
+                rawCapturedTranscript = text,
+                transcriptEvents = prependTranscriptEvent(state.transcriptEvents, if (didStart) "Start Phrase detected in partial: $text" else "Partial heard: $text"),
+                sessionState = if (didStart) SessionState.Capturing else state.sessionState,
+                providerActivity = "Partial transcript received from ${selectedProviderName(state)}.",
                 isListeningVisible = true
             )
         }
@@ -546,21 +606,30 @@ class WhisperCellViewModel : ViewModel() {
     private fun handleFinalTranscript(text: String) {
         viewModelScope.launch {
             val state: PerformanceUiState = _uiState.value
-            val startPhrases: List<String> = if (state.settings.startPhraseEnabled) state.settings.startPhrases + state.activeProfile.startPhrase else emptyList()
-            val stopPhrases: List<String> = if (state.settings.stopPhraseEnabled) state.settings.stopPhrases + state.activeProfile.stopPhrase else emptyList()
-            val hasStart: Boolean = state.activeProfile.startMode != StartMode.StartPhraseRequired || startPhraseDetector.containsStartPhrase(text, startPhrases)
-            val hasStop: Boolean = state.activeProfile.stopMode == StopMode.RequiredFieldsComplete || stopPhraseDetector.containsStopPhrase(text, stopPhrases)
+            val startPhrases: List<String> = if (state.settings.startPhraseEnabled) state.settings.startPhrases else emptyList()
+            val stopPhrases: List<String> = if (state.settings.stopPhraseEnabled) state.settings.stopPhrases else emptyList()
+            val hasStart: Boolean = !state.settings.startPhraseEnabled || startPhraseDetector.containsStartPhrase(text, startPhrases) || state.sessionState in listOf(SessionState.Capturing, SessionState.ThinkingPause)
+            val hasStop: Boolean = state.settings.stopPhraseEnabled && stopPhraseDetector.containsStopPhrase(text, stopPhrases)
             transcriptBuffer.append(text)
+            _uiState.update { current ->
+                current.copy(
+                    lastTranscriptLine = text,
+                    currentTranscript = transcriptBuffer.combined(),
+                    rawCapturedTranscript = transcriptBuffer.combined(),
+                    transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Final transcript chunk: $text"),
+                    providerActivity = "Final transcript chunk received from ${selectedProviderName(current)}."
+                )
+            }
             when {
-                state.activeProfile.startMode == StartMode.StartPhraseRequired && !hasStart && state.sessionState == SessionState.WaitingForStartPhrase -> {
-                    _uiState.update { current -> current.copy(lastTranscriptLine = text, logs = prependLog(current.logs, logger.entry("Transcript heard, still waiting for start phrase."))) }
+                state.settings.startPhraseEnabled && !hasStart && state.sessionState == SessionState.WaitingForStartPhrase -> {
+                    _uiState.update { current -> current.copy(logs = prependLog(current.logs, logger.entry("Transcript heard, still waiting for global Start Phrase."))) }
                 }
-                hasStop || state.activeProfile.stopMode in listOf(StopMode.StopPhraseProcessesTranscript, StopMode.StopPhrasePublishesAutomatically) -> {
+                hasStop -> {
+                    _uiState.update { current -> current.copy(transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Stop Phrase detected. Processing captured transcript.")) }
                     processTranscript(transcriptBuffer.combined(), publishAfterMatch = shouldAutoPublish(state))
                 }
                 else -> {
                     setState(SessionState.ThinkingPause, "Thinking pause detected. Silence does not finalize capture by default.")
-                    _uiState.update { it.copy(lastTranscriptLine = text, currentTranscript = transcriptBuffer.combined()) }
                 }
             }
         }
@@ -571,20 +640,33 @@ class WhisperCellViewModel : ViewModel() {
         setState(SessionState.ProcessingTranscript, "Transcript captured. Cleaning performance patter.")
         delay(150)
         val state: PerformanceUiState = _uiState.value
-        val providerName: String = state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Mock Transcript Mode"
-        setState(SessionState.ExtractingData, "AI-first extraction running via $providerName with rule fallback.")
+        val providerName: String = selectedProviderName(state)
+        val aiWillRun: Boolean = state.settings.openAiTranscriptionEnabled && state.settings.openAiApiKey.isNotBlank()
+        _uiState.update { current ->
+            current.copy(
+                rawCapturedTranscript = transcript,
+                providerActivity = "Captured transcript ready from $providerName.",
+                aiActivity = if (aiWillRun) "Calling OpenAI GPT extraction now…" else "GPT extraction not active/configured. Using rule fallback.",
+                transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Processing transcript: $transcript")
+            )
+        }
+        setState(SessionState.ExtractingData, if (aiWillRun) "Running GPT extraction via ${extractionModel(state)}." else "Running rule fallback extraction. GPT is not active/configured.")
         val extracted: ExtractedPerformanceData = extractionService.extract(
             transcript = transcript,
-            startPhrases = if (state.settings.removeStartAndStopPhrases) state.settings.startPhrases + state.activeProfile.startPhrase else emptyList(),
-            stopPhrases = if (state.settings.removeStartAndStopPhrases) state.settings.stopPhrases + state.activeProfile.stopPhrase else emptyList(),
-            aiEnabled = state.settings.openAiTranscriptionEnabled || state.settings.elevenLabsEnabled
+            startPhrases = if (state.settings.removeStartAndStopPhrases) state.settings.startPhrases else emptyList(),
+            stopPhrases = if (state.settings.removeStartAndStopPhrases) state.settings.stopPhrases else emptyList(),
+            aiEnabled = state.settings.openAiTranscriptionEnabled,
+            openAiApiKey = state.settings.openAiApiKey,
+            openAiModel = extractionModel(state)
         )
         _uiState.update { current ->
             current.copy(
                 extractedData = extracted,
                 currentTranscript = extracted.cleanedTranscript,
                 lastTranscriptLine = extracted.cleanedTranscript,
-                logs = prependLog(current.logs, logger.entry("Detected ${extracted.detectedItems.size} structured value(s).")),
+                aiActivity = "${extracted.extractionSource}: detected ${extracted.detectedItems.size} structured value(s).",
+                transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Extraction finished: ${extracted.extractionSource}."),
+                logs = prependLog(current.logs, logger.entry("${extracted.extractionSource}: detected ${extracted.detectedItems.size} structured value(s).")),
                 errorMessage = null
             )
         }
@@ -619,7 +701,7 @@ class WhisperCellViewModel : ViewModel() {
     }
 
     private fun shouldAutoPublish(state: PerformanceUiState): Boolean {
-        if (state.activeProfile.fullAutomationEnabled || state.activeProfile.stopMode == StopMode.StopPhrasePublishesAutomatically || state.settings.fullAutomationEnabled) return true
+        if (state.activeProfile.fullAutomationEnabled || state.settings.fullAutomationEnabled) return true
         return state.channels.any { channel -> channel.enabled && channel.autoPublish && channel.id in state.activeProfile.activeChannelIds }
     }
 
@@ -637,8 +719,8 @@ class WhisperCellViewModel : ViewModel() {
 
     private fun configFrom(state: PerformanceUiState): SpeechSessionConfig = SpeechSessionConfig(
         language = state.settings.language,
-        startPhrases = if (state.settings.startPhraseEnabled) state.settings.startPhrases + state.activeProfile.startPhrase else emptyList(),
-        stopPhrases = if (state.settings.stopPhraseEnabled) state.settings.stopPhrases + state.activeProfile.stopPhrase else emptyList(),
+        startPhrases = if (state.settings.startPhraseEnabled) state.settings.startPhrases else emptyList(),
+        stopPhrases = if (state.settings.stopPhraseEnabled) state.settings.stopPhrases else emptyList(),
         removeStartAndStopPhrases = state.settings.removeStartAndStopPhrases,
         chunkDurationMs = 3_000,
         silenceBehavior = SilenceBehavior.Ignore,
@@ -649,9 +731,33 @@ class WhisperCellViewModel : ViewModel() {
         },
         model = when (state.settings.selectedSpeechProviderId) {
             "elevenlabs_stt" -> state.settings.elevenLabsModel
-            else -> state.settings.openAiModel
+            else -> extractionModel(state)
         }
     )
+
+    private fun primaryStartPhrase(state: PerformanceUiState): String = state.settings.startPhrases.firstOrNull().orEmpty().ifBlank { "Picture this clearly for me" }
+
+    private fun primaryStopPhrase(state: PerformanceUiState): String = state.settings.stopPhrases.firstOrNull().orEmpty().ifBlank { "Perfect" }
+
+    private fun selectedProviderName(state: PerformanceUiState): String = state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Mock Transcript Mode"
+
+    private fun extractionModel(state: PerformanceUiState): String = when {
+        state.settings.openAiModel.contains("transcribe", ignoreCase = true) -> "gpt-4o-mini"
+        state.settings.openAiModel.isBlank() -> "gpt-4o-mini"
+        else -> state.settings.openAiModel
+    }
+
+    private fun providerReadinessMessage(state: PerformanceUiState): String {
+        val providerName: String = selectedProviderName(state)
+        return when (state.settings.selectedSpeechProviderId) {
+            "mock" -> "Mock Transcript Mode is active. Use Review to feed transcript text; no microphone audio is streamed in preview."
+            "openai_chunk", "openai_realtime" -> if (state.settings.openAiApiKey.isBlank()) "$providerName selected, but OpenAI API key is missing." else "$providerName selected. GPT extraction can run on captured/mock transcript; live audio streaming needs native provider completion."
+            "elevenlabs_stt" -> if (state.settings.elevenLabsApiKey.isBlank()) "$providerName selected, but ElevenLabs key is missing." else "$providerName selected for native speech handoff. Preview still uses mock transcript input."
+            else -> "$providerName selected."
+        }
+    }
+
+    private fun prependTranscriptEvent(events: List<String>, event: String): List<String> = (listOf(event) + events).take(20)
 
     private fun updateActiveProfile(logMessage: String, transform: (PerformanceProfile) -> PerformanceProfile) {
         _uiState.update { state ->
@@ -720,17 +826,19 @@ class WhisperCellViewModel : ViewModel() {
             cooldownSeconds = 5,
             loggingEnabled = true
         )
+        val globalStart: String = "Picture this clearly for me"
+        val globalStop: String = "Perfect"
         return listOf(
-            profile("basic_word", "Basic Word Reveal", "Hold one clear thought", "Got it", "word", listOf(DetectedCategory.Word, DetectedCategory.Phrase)),
-            profile("card", "Card Reveal", "Name it out loud", "Don't change it", "card", listOf(DetectedCategory.PlayingCard)),
-            profile("date", "Date or Birthday Reveal", "Take your time and make it specific", "That's clear", "date", listOf(DetectedCategory.Date, DetectedCategory.Birthday)),
-            profile("music", "Music Reveal", "Make the song clear in your mind", "Got it", "music", listOf(DetectedCategory.Song, DetectedCategory.Artist, DetectedCategory.Lyric)),
-            profile("serial", "Serial Number Reveal", "Say the whole thing", "Perfect", "serial", listOf(DetectedCategory.SerialNumber, DetectedCategory.Number)),
-            profile("zodiac", "Zodiac Reveal", "Think of the date clearly", "Keep that in mind", "zodiac", listOf(DetectedCategory.Zodiac, DetectedCategory.Birthday)),
-            profile("name", "Name Reveal", "Go with your first instinct", "Nice", "name", listOf(DetectedCategory.Name, DetectedCategory.Celebrity)),
-            profile("object", "Object Reveal", "Set the scene for me", "Hold that thought", "object", listOf(DetectedCategory.Object)),
-            profile("confab", "Confabulation", "Picture this clearly for me", "Perfect", "confabulation", listOf(DetectedCategory.Place, DetectedCategory.Celebrity, DetectedCategory.Name, DetectedCategory.Date, DetectedCategory.Object, DetectedCategory.Song, DetectedCategory.FullConfabulation)),
-            profile("custom", "Custom Profile", "Describe it like it already happened", "That tells me enough", "word", DetectedCategory.entries)
+            profile("basic_word", "Basic Word Reveal", globalStart, globalStop, "word", listOf(DetectedCategory.Word, DetectedCategory.Phrase)),
+            profile("card", "Card Reveal", globalStart, globalStop, "card", listOf(DetectedCategory.PlayingCard)),
+            profile("date", "Date or Birthday Reveal", globalStart, globalStop, "date", listOf(DetectedCategory.Date, DetectedCategory.Birthday)),
+            profile("music", "Music Reveal", globalStart, globalStop, "music", listOf(DetectedCategory.Song, DetectedCategory.Artist, DetectedCategory.Lyric)),
+            profile("serial", "Serial Number Reveal", globalStart, globalStop, "serial", listOf(DetectedCategory.SerialNumber, DetectedCategory.Number)),
+            profile("zodiac", "Zodiac Reveal", globalStart, globalStop, "zodiac", listOf(DetectedCategory.Zodiac, DetectedCategory.Birthday)),
+            profile("name", "Name Reveal", globalStart, globalStop, "name", listOf(DetectedCategory.Name, DetectedCategory.Celebrity)),
+            profile("object", "Object Reveal", globalStart, globalStop, "object", listOf(DetectedCategory.Object)),
+            profile("confab", "Confabulation", globalStart, globalStop, "confabulation", listOf(DetectedCategory.Place, DetectedCategory.Celebrity, DetectedCategory.Name, DetectedCategory.Date, DetectedCategory.Object, DetectedCategory.Song, DetectedCategory.FullConfabulation)),
+            profile("custom", "Custom Routine", globalStart, globalStop, "word", DetectedCategory.entries)
         ).filter { profile -> channels.any { it.id in profile.activeChannelIds } }
     }
 }
