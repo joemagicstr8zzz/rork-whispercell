@@ -5,13 +5,14 @@ import io.ktor.client.call.body
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.accept
-import io.ktor.client.request.forms.FormDataContent
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
-import io.ktor.http.Parameters
+import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class InjectPublisher {
     private val client: HttpClient = HttpClient(Android) {
@@ -66,9 +67,15 @@ class InjectPublisher {
     }
 
     private suspend fun postValue(endpoint: String, value: String): String {
+        val body = buildJsonObject {
+            put("count", System.currentTimeMillis())
+            put("value", value)
+        }.toString()
+
         val response = client.post(endpoint) {
             accept(ContentType.Text.Plain)
-            setBody(FormDataContent(Parameters.build { append("value", value) }))
+            contentType(ContentType.Application.Json)
+            setBody(body)
         }
         if (!response.status.isSuccess()) error("Endpoint returned ${response.status.value}")
         return response.body<String>().ifBlank { "Published" }
