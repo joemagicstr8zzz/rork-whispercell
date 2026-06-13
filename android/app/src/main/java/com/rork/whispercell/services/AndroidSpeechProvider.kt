@@ -147,6 +147,9 @@ class AndroidSpeechProvider(
         putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, MINIMUM_CAPTURE_WINDOW_MS)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, COMPLETE_SILENCE_MS)
+        putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, POSSIBLE_SILENCE_MS)
     }
 
     private fun Bundle?.bestText(): String = this
@@ -158,5 +161,11 @@ class AndroidSpeechProvider(
         "en", "english" -> "en-US"
         "ja", "japanese" -> "ja-JP"
         else -> language.ifBlank { "en-US" }
+    }
+
+    private companion object {
+        const val MINIMUM_CAPTURE_WINDOW_MS = 60_000L
+        const val COMPLETE_SILENCE_MS = 30_000L
+        const val POSSIBLE_SILENCE_MS = 30_000L
     }
 }
