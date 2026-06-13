@@ -27,7 +27,7 @@ data class AppSettings(
     val injectEnabled: Boolean = true,
     val selectionCode: String = "",
     val injectTimeoutSeconds: Int = 8,
-    val injectRetryOnce: Boolean = true,
+    val injectRetryOnce: Boolean = false,
     val reviewModeEnabled: Boolean = true,
     val fullAutomationEnabled: Boolean = false,
     val audioSavingEnabled: Boolean = false,
