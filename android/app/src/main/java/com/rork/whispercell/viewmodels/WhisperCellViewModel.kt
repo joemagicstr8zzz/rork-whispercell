@@ -28,6 +28,7 @@ import com.rork.whispercell.services.ProviderCatalog
 import com.rork.whispercell.services.SessionLogger
 import com.rork.whispercell.services.StartPhraseDetector
 import com.rork.whispercell.services.StopPhraseDetector
+import com.rork.whispercell.services.TranscriptBrainService
 import com.rork.whispercell.services.TranscriptBuffer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,6 +46,7 @@ class WhisperCellViewModel : ViewModel() {
     private val stopPhraseDetector = StopPhraseDetector()
     private val extractionService = AIExtractionService()
     private val channelMatcher = ChannelMatcher()
+    private val transcriptBrainService = TranscriptBrainService()
     private val injectPublisher = InjectPublisher()
     private val mockSpeechProvider = MockSpeechProvider()
     private var hasPublishedThisCapture: Boolean = false
@@ -59,7 +61,7 @@ class WhisperCellViewModel : ViewModel() {
             channels = defaultChannels,
             speechProviders = ProviderCatalog.providers,
             activeChannels = defaultChannels.filter { it.id in defaultProfiles.first { profile -> profile.name == "Confabulation" }.activeChannelIds },
-            logs = listOf(logger.entry("WhisperCell ready. Transcript proof will appear in Logs after each extraction."))
+            logs = listOf(logger.entry("WhisperCell ready. Transcript Brain will analyze each finished capture."))
         )
     )
     val uiState: StateFlow<PerformanceUiState> = _uiState.asStateFlow()
@@ -93,6 +95,7 @@ class WhisperCellViewModel : ViewModel() {
                     providerActivity = providerReadinessMessage(current),
                     aiActivity = "Waiting for captured speech before extraction.",
                     rawCapturedTranscript = "",
+                    transcriptBrain = null,
                     transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Session started. Waiting for Start Phrase: ${primaryStartPhrase(current)}")
                 )
             }
@@ -124,6 +127,7 @@ class WhisperCellViewModel : ViewModel() {
                 lastTranscriptLine = "No transcript yet.",
                 transcriptEvents = emptyList(),
                 extractedData = null,
+                transcriptBrain = null,
                 selectedMatch = null,
                 lastPublishedValue = "Nothing published yet.",
                 lastInjectUrl = endpointForState(state),
@@ -207,7 +211,7 @@ class WhisperCellViewModel : ViewModel() {
 
     fun simulateInjectPublish() {
         val state = _uiState.value
-        val value = state.selectedMatch?.payload ?: state.extractedData?.bestMatches?.fullConfabulation ?: state.extractedData?.detectedItems?.firstOrNull()?.normalizedValue.orEmpty()
+        val value = state.transcriptBrain?.primaryPayload ?: state.selectedMatch?.payload ?: state.extractedData?.bestMatches?.fullConfabulation ?: state.extractedData?.detectedItems?.firstOrNull()?.normalizedValue.orEmpty()
         if (value.isBlank()) { _uiState.update { it.copy(errorMessage = "Run extraction before publishing.") }; return }
         val code = state.settings.selectionCode
         val url = if (code.isBlank()) "Inject Code required" else injectPublisher.publishUrl(code, value)
@@ -238,13 +242,13 @@ class WhisperCellViewModel : ViewModel() {
     fun publishSelectedValue() {
         viewModelScope.launch {
             val state = _uiState.value
-            val value = state.selectedMatch?.payload.orEmpty()
+            val value = state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload.orEmpty()
             val code = state.settings.selectionCode
-            if (value.isBlank()) { _uiState.update { it.copy(errorMessage = "No channel payload selected. Run extraction first.") }; return@launch }
+            if (value.isBlank()) { _uiState.update { it.copy(errorMessage = "No payload selected. Confirm transcript proof first.") }; return@launch }
             if (!state.settings.injectEnabled) { _uiState.update { it.copy(errorMessage = "Publishing is disabled. Turn it on first.") }; return@launch }
             if (code.isBlank()) { _uiState.update { current -> current.copy(injectStatus = InjectStatus.RetryAvailable, errorMessage = "Enter your Inject Code before publishing.", logs = prependLog(current.logs, logger.entry("Publish blocked: missing code.", LogLevel.Warning))) }; return@launch }
             if (hasPublishedThisCapture) { _uiState.update { current -> current.copy(errorMessage = "This capture already published once. Start a new session or clear before publishing again.", logs = prependLog(current.logs, logger.entry("Duplicate publish blocked for this capture.", LogLevel.Warning))) }; return@launch }
-            setState(SessionState.PublishingToInject, "Publishing selected value once.")
+            setState(SessionState.PublishingToInject, "Publishing Transcript Brain payload once.")
             _uiState.update { it.copy(injectStatus = InjectStatus.Publishing, lastInjectUrl = injectPublisher.publishUrl(code, value)) }
             injectPublisher.publish(code, value, false).fold(
                 onSuccess = {
@@ -284,11 +288,13 @@ class WhisperCellViewModel : ViewModel() {
             )
             val testProfile = state.activeProfile.copy(activeChannelIds = listOf(channelId), routingBehavior = RoutingBehavior.BestConfidenceMatch)
             val match = channelMatcher.match(testProfile, state.channels, extracted).firstOrNull()
+            val brain = transcriptBrainService.analyze(extracted, match, testProfile, state.channels.filter { it.id == channelId })
             _uiState.update { current ->
                 current.copy(
                     extractedData = extracted,
-                    selectedMatch = match,
-                    logs = prependLog(current.logs, logger.entry(match?.let { "Tested ${it.channel.name}: ${it.payload}" } ?: "No value matched this output.", if (match != null) LogLevel.Success else LogLevel.Warning)),
+                    transcriptBrain = brain,
+                    selectedMatch = match?.copy(payload = brain.primaryPayload.ifBlank { match.payload }, confidence = maxOf(match.confidence, brain.confidence), reason = "Brain test: ${brain.reasoning}"),
+                    logs = prependLog(current.logs, logger.entry(match?.let { "Tested ${it.channel.name}: ${brain.primaryPayload.ifBlank { it.payload }}" } ?: "No value matched this output.", if (match != null) LogLevel.Success else LogLevel.Warning)),
                     errorMessage = if (match == null) "No value matched this output. Try a relevant transcript." else null
                 )
             }
@@ -383,10 +389,29 @@ class WhisperCellViewModel : ViewModel() {
         _uiState.update { current -> current.copy(extractedData = extracted, currentTranscript = extracted.cleanedTranscript, lastTranscriptLine = extracted.cleanedTranscript, aiActivity = "${extracted.extractionSource}: detected ${extracted.detectedItems.size} value(s).", logs = prependLog(prependLog(prependLog(current.logs, logger.entry("Transcript proof raw: ${trimForLog(extracted.rawTranscript)}")), logger.entry("Transcript proof cleaned: ${trimForLog(extracted.cleanedTranscript)}")), logger.entry("${extracted.extractionSource}: detected ${extracted.detectedItems.size} value(s).")), errorMessage = null) }
         setState(SessionState.MatchingChannel, "Matching detected values against active channels.")
         rematchIfPossible()
+        val matched = _uiState.value.selectedMatch
+        val brain = transcriptBrainService.analyze(extracted, matched, _uiState.value.activeProfile, _uiState.value.activeChannels)
+        val brainMatch = matched?.let { match ->
+            val payload = brain.primaryPayload.ifBlank { match.payload }
+            match.copy(payload = payload, confidence = maxOf(match.confidence, brain.confidence), reason = "Brain: ${brain.reasoning}")
+        }
+        _uiState.update { current ->
+            current.copy(
+                transcriptBrain = brain,
+                selectedMatch = brainMatch ?: matched,
+                logs = prependLog(
+                    prependLog(current.logs, logger.entry("Transcript Brain primary: ${brain.primaryPayload.ifBlank { "none" }}", if (brain.primaryPayload.isNotBlank()) LogLevel.Success else LogLevel.Warning)),
+                    logger.entry("Transcript Brain confidence: ${(brain.confidence * 100).toInt()}% — ${brain.reasoning}")
+                )
+            )
+        }
         val selected = _uiState.value.selectedMatch
         _uiState.update { current -> current.copy(logs = prependLog(current.logs, logger.entry(selected?.let { "Transcript proof selected payload: ${it.payload}" } ?: "Transcript proof selected payload: none", if (selected != null) LogLevel.Success else LogLevel.Warning))) }
         transcriptBuffer.clear()
-        if (publishAfterMatch && selected != null) publishSelectedValue() else setState(SessionState.MatchingChannel, "Review Mode is on. Approve before publishing.")
+        if (publishAfterMatch && selected != null && brain.shouldPublish) publishSelectedValue() else {
+            if (publishAfterMatch && !brain.shouldPublish) _uiState.update { current -> current.copy(logs = prependLog(current.logs, logger.entry("Auto-publish paused by Transcript Brain. Review proof before sending.", LogLevel.Warning))) }
+            setState(SessionState.MatchingChannel, "Review Mode is on. Approve before publishing.")
+        }
     }
 
     private fun rematchIfPossible() {
@@ -407,7 +432,7 @@ class WhisperCellViewModel : ViewModel() {
     private fun primaryStopPhrase(state: PerformanceUiState): String = state.settings.stopPhrases.firstOrNull().orEmpty().ifBlank { "Perfect" }
     private fun extractionModel(state: PerformanceUiState): String = if (state.settings.openAiModel.contains("transcribe", true) || state.settings.openAiModel.isBlank()) "gpt-4o-mini" else state.settings.openAiModel
     private fun providerReadinessMessage(state: PerformanceUiState): String = state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName?.let { "$it selected." } ?: "Mock Transcript Mode ready."
-    private fun previewValue(state: PerformanceUiState): String = state.selectedMatch?.payload ?: state.lastPublishedValue.takeUnless { it == "Nothing published yet." } ?: "WhisperCell Test"
+    private fun previewValue(state: PerformanceUiState): String = state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: state.lastPublishedValue.takeUnless { it == "Nothing published yet." } ?: "WhisperCell Test"
     private fun endpointForState(state: PerformanceUiState): String = state.settings.selectionCode.takeIf { it.isNotBlank() }?.let { injectPublisher.publishUrl(it, previewValue(state)) }.orEmpty()
     private fun trimForLog(value: String, max: Int = 220): String = value.replace(Regex("\\s+"), " ").trim().let { if (it.length <= max) it else it.take(max) + "…" }
     private fun prependTranscriptEvent(events: List<String>, event: String): List<String> = (listOf(event) + events).take(20)
