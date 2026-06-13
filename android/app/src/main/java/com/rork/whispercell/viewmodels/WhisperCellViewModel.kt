@@ -47,6 +47,7 @@ class WhisperCellViewModel : ViewModel() {
     private val channelMatcher = ChannelMatcher()
     private val injectPublisher = InjectPublisher()
     private val mockSpeechProvider = MockSpeechProvider()
+    private var hasPublishedThisCapture: Boolean = false
 
     private val defaultChannels = buildDefaultChannels()
     private val defaultProfiles = buildDefaultProfiles(defaultChannels)
@@ -84,6 +85,7 @@ class WhisperCellViewModel : ViewModel() {
     fun startBackgroundSession() {
         viewModelScope.launch {
             val state = _uiState.value
+            hasPublishedThisCapture = false
             mockSpeechProvider.startSession(configFrom(state))
             transcriptBuffer.clear()
             _uiState.update { current ->
@@ -108,12 +110,13 @@ class WhisperCellViewModel : ViewModel() {
     fun panicStop() {
         transcriptBuffer.clear()
         _uiState.update { state ->
-            state.copy(sessionState = SessionState.PanicStopped, isListeningVisible = false, notificationState = "Stopped", logs = prependLog(state.logs, logger.entry("Immediate stop pressed. Listening and processing halted.", LogLevel.Warning)), errorMessage = null)
+            state.copy(sessionState = SessionState.PanicStopped, isListeningVisible = false, notificationState = "Stopped", providerActivity = "Panic stop active. No capture is running.", logs = prependLog(state.logs, logger.entry("Immediate stop pressed. Listening and processing halted.", LogLevel.Warning)), errorMessage = null)
         }
     }
 
     fun clearSession() {
         transcriptBuffer.clear()
+        hasPublishedThisCapture = false
         _uiState.update { state ->
             state.copy(
                 currentTranscript = "",
@@ -225,8 +228,8 @@ class WhisperCellViewModel : ViewModel() {
                 return@launch
             }
             _uiState.update { current -> current.copy(sessionState = SessionState.PublishingToInject, injectStatus = InjectStatus.Testing, lastInjectUrl = injectPublisher.publishUrl(code, value), logs = prependLog(current.logs, logger.entry("Testing fixed endpoint with JSON value field.")), errorMessage = null) }
-            injectPublisher.publish(code, value, state.settings.injectRetryOnce).fold(
-                onSuccess = { _uiState.update { current -> current.copy(sessionState = SessionState.Published, injectStatus = InjectStatus.Connected, lastPublishedValue = value, logs = prependLog(current.logs, logger.entry("Test value transmitted.", LogLevel.Success)), errorMessage = null) } },
+            injectPublisher.publish(code, value, false).fold(
+                onSuccess = { _uiState.update { current -> current.copy(sessionState = SessionState.Published, injectStatus = InjectStatus.Connected, lastPublishedValue = value, logs = prependLog(current.logs, logger.entry("Test value transmitted once.", LogLevel.Success)), errorMessage = null) } },
                 onFailure = { error -> _uiState.update { current -> current.copy(sessionState = SessionState.Error, injectStatus = InjectStatus.RetryAvailable, logs = prependLog(current.logs, logger.entry("Publish test failed: ${error.message ?: "Unknown error"}", LogLevel.Error)), errorMessage = "Publish test failed. Check code and network.") } }
             )
         }
@@ -240,10 +243,14 @@ class WhisperCellViewModel : ViewModel() {
             if (value.isBlank()) { _uiState.update { it.copy(errorMessage = "No channel payload selected. Run extraction first.") }; return@launch }
             if (!state.settings.injectEnabled) { _uiState.update { it.copy(errorMessage = "Publishing is disabled. Turn it on first.") }; return@launch }
             if (code.isBlank()) { _uiState.update { current -> current.copy(injectStatus = InjectStatus.RetryAvailable, errorMessage = "Enter your Inject Code before publishing.", logs = prependLog(current.logs, logger.entry("Publish blocked: missing code.", LogLevel.Warning))) }; return@launch }
-            setState(SessionState.PublishingToInject, "Publishing selected value.")
+            if (hasPublishedThisCapture) { _uiState.update { current -> current.copy(errorMessage = "This capture already published once. Start a new session or clear before publishing again.", logs = prependLog(current.logs, logger.entry("Duplicate publish blocked for this capture.", LogLevel.Warning))) }; return@launch }
+            setState(SessionState.PublishingToInject, "Publishing selected value once.")
             _uiState.update { it.copy(injectStatus = InjectStatus.Publishing, lastInjectUrl = injectPublisher.publishUrl(code, value)) }
-            injectPublisher.publish(code, value, state.settings.injectRetryOnce).fold(
-                onSuccess = { _uiState.update { current -> current.copy(sessionState = SessionState.Published, injectStatus = InjectStatus.Published, lastPublishedValue = value, notificationState = backgroundSessionService.notificationFor(SessionState.Published.label), logs = prependLog(current.logs, logger.entry("Published: $value", LogLevel.Success)), errorMessage = null) } },
+            injectPublisher.publish(code, value, false).fold(
+                onSuccess = {
+                    hasPublishedThisCapture = true
+                    _uiState.update { current -> current.copy(sessionState = SessionState.Published, injectStatus = InjectStatus.Published, lastPublishedValue = value, notificationState = backgroundSessionService.notificationFor(SessionState.Published.label), providerActivity = if (current.settings.continueListeningAfterPublish) "Published once. Waiting for next Start Phrase." else "Published once. Capture stopped.", logs = prependLog(current.logs, logger.entry("Published once: $value", LogLevel.Success)), errorMessage = null) }
+                },
                 onFailure = { error -> _uiState.update { current -> current.copy(sessionState = SessionState.Error, injectStatus = InjectStatus.RetryAvailable, logs = prependLog(current.logs, logger.entry("Publish failed: ${error.message ?: "Unknown error"}", LogLevel.Error)), errorMessage = "Publish failed. Check network or code.") } }
             )
         }
@@ -312,7 +319,17 @@ class WhisperCellViewModel : ViewModel() {
     private fun handlePartialTranscript(text: String) {
         _uiState.update { state ->
             val didStart = state.sessionState == SessionState.WaitingForStartPhrase && startPhraseDetector.containsStartPhrase(text, if (state.settings.startPhraseEnabled) state.settings.startPhrases else emptyList())
-            state.copy(lastTranscriptLine = text, currentTranscript = text, rawCapturedTranscript = text, transcriptEvents = prependTranscriptEvent(state.transcriptEvents, if (didStart) "Start Phrase detected: $text" else "Partial heard: $text"), sessionState = if (didStart) SessionState.Capturing else state.sessionState, isListeningVisible = true)
+            if (didStart) hasPublishedThisCapture = false
+            state.copy(
+                lastTranscriptLine = text,
+                currentTranscript = text,
+                rawCapturedTranscript = text,
+                transcriptEvents = prependTranscriptEvent(state.transcriptEvents, if (didStart) "START PHRASE CAUGHT. Capturing now: $text" else "Partial heard: $text"),
+                sessionState = if (didStart) SessionState.Capturing else state.sessionState,
+                providerActivity = if (didStart) "Start Phrase caught. Capturing everything until Stop Phrase." else if (state.sessionState == SessionState.Capturing) "Capturing speech. Waiting for Stop Phrase." else state.providerActivity,
+                isListeningVisible = true,
+                logs = if (didStart) prependLog(state.logs, logger.entry("Start Phrase caught. Capture is now active.", LogLevel.Success)) else state.logs
+            )
         }
     }
 
@@ -321,8 +338,26 @@ class WhisperCellViewModel : ViewModel() {
             val state = _uiState.value
             val hasStart = !state.settings.startPhraseEnabled || startPhraseDetector.containsStartPhrase(text, state.settings.startPhrases) || state.sessionState in listOf(SessionState.Capturing, SessionState.ThinkingPause)
             val hasStop = state.settings.stopPhraseEnabled && stopPhraseDetector.containsStopPhrase(text, state.settings.stopPhrases)
+            if (hasStart && state.sessionState == SessionState.WaitingForStartPhrase) hasPublishedThisCapture = false
             transcriptBuffer.append(text)
-            _uiState.update { current -> current.copy(lastTranscriptLine = text, currentTranscript = transcriptBuffer.combined(), rawCapturedTranscript = transcriptBuffer.combined(), transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Final transcript chunk: $text"), logs = prependLog(current.logs, logger.entry("Final transcript captured: ${trimForLog(text)}"))) }
+            _uiState.update { current ->
+                current.copy(
+                    lastTranscriptLine = text,
+                    currentTranscript = transcriptBuffer.combined(),
+                    rawCapturedTranscript = transcriptBuffer.combined(),
+                    transcriptEvents = prependTranscriptEvent(current.transcriptEvents, when {
+                        hasStop -> "STOP PHRASE CAUGHT. Capture closed: $text"
+                        hasStart -> "Start Phrase confirmed in final transcript: $text"
+                        else -> "Final transcript chunk: $text"
+                    }),
+                    providerActivity = when {
+                        hasStop -> "Stop Phrase caught. Capture stopped. Processing transcript now."
+                        hasStart -> "Start Phrase caught. Capturing everything until Stop Phrase."
+                        else -> current.providerActivity
+                    },
+                    logs = prependLog(current.logs, logger.entry("Final transcript captured: ${trimForLog(text)}"))
+                )
+            }
             when {
                 state.settings.startPhraseEnabled && !hasStart && state.sessionState == SessionState.WaitingForStartPhrase -> _uiState.update { current -> current.copy(logs = prependLog(current.logs, logger.entry("Transcript heard, still waiting for Start Phrase."))) }
                 hasStop -> processTranscript(transcriptBuffer.combined(), shouldAutoPublish(state))
