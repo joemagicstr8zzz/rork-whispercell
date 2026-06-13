@@ -5,18 +5,12 @@ import io.ktor.client.call.body
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.accept
-import io.ktor.client.request.forms.FormDataContent
-import io.ktor.client.request.post
-import io.ktor.client.request.setBody
+import io.ktor.client.request.get
 import io.ktor.http.ContentType
-import io.ktor.http.Parameters
-import io.ktor.http.contentType
 import io.ktor.http.isSuccess
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import java.net.URLEncoder
 
-/** Publishes selected values to Inject by posting a value field to the fixed selection endpoint. */
+/** Publishes selected values to Inject using the code-based selection URL. */
 class InjectPublisher {
     private val client: HttpClient = HttpClient(Android) {
         install(HttpTimeout) {
@@ -26,57 +20,49 @@ class InjectPublisher {
         }
     }
 
-    private val json: Json = Json { encodeDefaults = true }
+    fun sanitizeInjectCode(input: String): String = input.filter { it.isLetterOrDigit() }.take(7)
 
-    fun endpoint(): String = INJECT_SELECTION_ENDPOINT
+    fun endpoint(injectCode: String = ""): String {
+        val cleanCode = sanitizeInjectCode(injectCode)
+        return if (cleanCode.isBlank()) {
+            "https://11z.co/_w/{INJECT_CODE}/selection"
+        } else {
+            "https://11z.co/_w/$cleanCode/selection"
+        }
+    }
 
-    suspend fun publish(value: String, retryOnce: Boolean): Result<String> {
-        val cleanValue: String = value.trim()
+    fun publishUrl(injectCode: String, value: String): String {
+        val cleanCode = sanitizeInjectCode(injectCode)
+        val encodedValue = URLEncoder.encode(value.trim(), "UTF-8")
+        return "${endpoint(cleanCode)}?value=$encodedValue"
+    }
+
+    suspend fun publish(injectCode: String, value: String, retryOnce: Boolean = true): Result<String> {
+        val cleanCode = sanitizeInjectCode(injectCode)
+        val cleanValue = value.trim()
+        if (cleanCode.isBlank()) return Result.failure(IllegalArgumentException("Inject code is required"))
         if (cleanValue.isBlank()) return Result.failure(IllegalArgumentException("Value is required"))
 
-        val attemptCount: Int = if (retryOnce) 2 else 1
+        val attempts = if (retryOnce) 2 else 1
         var lastError: Throwable? = null
-        repeat(attemptCount) {
-            val result: Result<String> = runCatching { postFormValue(cleanValue) }
-                .recoverCatching { formError ->
-                    lastError = formError
-                    postJsonValue(cleanValue)
-                }
+        repeat(attempts) {
+            val result = runCatching { getValueUrl(cleanCode, cleanValue) }
             result.fold(
-                onSuccess = { responseText -> return Result.success(responseText) },
-                onFailure = { throwable -> lastError = throwable }
+                onSuccess = { return Result.success(it) },
+                onFailure = { lastError = it }
             )
         }
         return Result.failure(lastError ?: IllegalStateException("Inject publish failed"))
     }
 
-    fun sanitizeInjectCode(input: String): String = input.filter { it.isLetterOrDigit() }.take(7)
+    suspend fun publish(value: String, retryOnce: Boolean): Result<String> =
+        Result.failure(IllegalArgumentException("Inject code is required. Use publish(injectCode, value, retryOnce)."))
 
-    private suspend fun postJsonValue(value: String): String {
-        val response = client.post(INJECT_SELECTION_ENDPOINT) {
-            contentType(ContentType.Application.Json)
-            accept(ContentType.Application.Json)
-            setBody(json.encodeToString(InjectValuePayload(value = value)))
+    private suspend fun getValueUrl(injectCode: String, value: String): String {
+        val response = client.get(publishUrl(injectCode, value)) {
+            accept(ContentType.Text.Plain)
         }
         if (!response.status.isSuccess()) error("Inject returned ${response.status.value}")
         return response.body<String>().ifBlank { "Published" }
-    }
-
-    private suspend fun postFormValue(value: String): String {
-        val response = client.post(INJECT_SELECTION_ENDPOINT) {
-            accept(ContentType.Application.Json)
-            setBody(FormDataContent(Parameters.build { append("value", value) }))
-        }
-        if (!response.status.isSuccess()) error("Inject returned ${response.status.value}")
-        return response.body<String>().ifBlank { "Published" }
-    }
-
-    private companion object {
-        const val INJECT_SELECTION_ENDPOINT: String = "https://11z.co/_w/selection"
     }
 }
-
-@Serializable
-private data class InjectValuePayload(
-    val value: String
-)
