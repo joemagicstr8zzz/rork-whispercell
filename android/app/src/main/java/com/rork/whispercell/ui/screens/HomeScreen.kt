@@ -83,7 +83,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.rork.whispercell.models.Channel
 import com.rork.whispercell.models.DetectedItem
-import com.rork.whispercell.models.ExtractedPerformanceData
 import com.rork.whispercell.models.LogEntry
 import com.rork.whispercell.models.LogLevel
 import com.rork.whispercell.models.PerformanceProfile
@@ -94,7 +93,6 @@ import com.rork.whispercell.viewmodels.WhisperCellViewModel
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
     Performance("Performance", Icons.Filled.Mic),
-    Review("Proof", Icons.Filled.Article),
     Profiles("Routines", Icons.Filled.Tune),
     Channels("Outputs", Icons.Filled.Route),
     Inject("Inject", Icons.Filled.Hub),
@@ -153,7 +151,7 @@ fun HomeScreen(
         permissionStatus = refreshed
         if (pendingStartAfterPermission && refreshed.hasRequiredRuntimePermissions) {
             pendingStartAfterPermission = false
-            startPerformanceForegroundService(context, "Waiting for start phrase")
+            startPerformanceForegroundService(context, "Recording")
             viewModel.startBackgroundSession()
         } else if (pendingStartAfterPermission) {
             pendingStartAfterPermission = false
@@ -161,11 +159,11 @@ fun HomeScreen(
         }
     }
     val requestPermissions = { permissionLauncher.launch(requiredRuntimePermissions()) }
-    val startBackgroundSession = {
+    val startCapture = {
         val refreshed = buildPermissionUiState(context)
         permissionStatus = refreshed
         if (refreshed.hasRequiredRuntimePermissions) {
-            startPerformanceForegroundService(context, "Waiting for start phrase")
+            startPerformanceForegroundService(context, "Recording")
             viewModel.startBackgroundSession()
         } else {
             pendingStartAfterPermission = true
@@ -173,7 +171,7 @@ fun HomeScreen(
             requestPermissions()
         }
     }
-    val stopSession = { stopPerformanceForegroundService(context); viewModel.stopSession() }
+    val stopCapture = { stopPerformanceForegroundService(context); viewModel.stopSession() }
     val panicStop = { stopPerformanceForegroundService(context); viewModel.panicStop() }
 
     Scaffold(
@@ -182,7 +180,7 @@ fun HomeScreen(
                 title = {
                     Column {
                         Text("WhisperCell", fontWeight = FontWeight.Black)
-                        Text("Performer-side AI listening hub", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("Recorder → transcript → brain → Inject", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 },
                 actions = {
@@ -212,8 +210,7 @@ fun HomeScreen(
                 .padding(innerPadding)
         ) {
             when (selectedTab) {
-                MainTab.Performance -> PerformanceScreen(state, permissionStatus, startBackgroundSession, stopSession, panicStop, viewModel::pauseListening, viewModel::resumeListening, requestPermissions, viewModel::clearSession)
-                MainTab.Review -> ProofScreen(state, viewModel)
+                MainTab.Performance -> PerformanceScreen(state, permissionStatus, startCapture, stopCapture, panicStop, viewModel::pauseListening, viewModel::resumeListening, requestPermissions, viewModel::clearSession, viewModel::publishSelectedValue)
                 MainTab.Profiles -> ProfilesScreen(state, viewModel)
                 MainTab.Channels -> ChannelsScreen(state, viewModel)
                 MainTab.Inject -> InjectScreen(state, viewModel)
@@ -229,45 +226,83 @@ fun HomeScreen(
 private fun PerformanceScreen(
     state: PerformanceUiState,
     permissionStatus: PermissionUiState,
-    onStartBackgroundSession: () -> Unit,
-    onStopSession: () -> Unit,
+    onStartCapture: () -> Unit,
+    onStopCapture: () -> Unit,
     onPanicStop: () -> Unit,
     onPauseListening: () -> Unit,
     onResumeListening: () -> Unit,
     onRequestPermissions: () -> Unit,
-    onClearSession: () -> Unit
+    onClearSession: () -> Unit,
+    onPublish: () -> Unit
 ) {
+    val clipboard = LocalClipboardManager.current
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { SessionHero(state) }
         item { PermissionReadinessCard(permissionStatus, onRequestPermissions) }
         item {
-            SectionCard("Hands-free controls", Icons.Filled.RadioButtonChecked) {
+            SectionCard("Recorder controls", Icons.Filled.RadioButtonChecked) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Start Background Session", Icons.Filled.PlayArrow, Modifier.weight(1f), onStartBackgroundSession)
+                    PrimaryControlButton("Start Recording", Icons.Filled.PlayArrow, Modifier.weight(1f), onStartCapture)
                     DangerControlButton("Panic Stop", Icons.Filled.Emergency, Modifier.weight(1f), onPanicStop)
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     SecondaryControlButton("Pause", Icons.Filled.Pause, Modifier.weight(1f), onPauseListening)
                     SecondaryControlButton("Resume", Icons.Filled.PlayArrow, Modifier.weight(1f), onResumeListening)
-                    SecondaryControlButton("Stop", Icons.Filled.Stop, Modifier.weight(1f), onStopSession)
+                    SecondaryControlButton("Stop", Icons.Filled.Stop, Modifier.weight(1f), onStopCapture)
                 }
                 Spacer(Modifier.height(10.dp))
-                SecondaryControlButton("Clear Session", Icons.Filled.DeleteSweep, Modifier.fillMaxWidth(), onClearSession)
+                SecondaryControlButton("Clear", Icons.Filled.DeleteSweep, Modifier.fillMaxWidth(), onClearSession)
             }
         }
         item {
-            SectionCard("Current capture", Icons.Filled.Bolt) {
-                InfoRow("Active routine", state.activeProfile.name)
-                InfoRow("Start Phrase", primaryStartPhrase(state))
-                InfoRow("Stop Phrase", primaryStopPhrase(state))
-                InfoRow("Outputs", state.activeChannels.joinToString { it.name.removeSuffix(" Channel") }.ifBlank { "No active outputs" })
-                InfoRow("Inject code", state.settings.selectionCode.ifBlank { "Not set" })
-                InfoRow("Status", state.injectStatus.label)
-                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after code is set" })
+            SectionCard("Live capture", Icons.Filled.Podcasts) {
+                InfoRow("Provider", state.providerActivity)
+                InfoRow("Last heard", state.lastTranscriptLine)
+                InfoRow("Transcript", state.rawCapturedTranscript.ifBlank { "Recording has not produced transcript yet" })
+                InfoRow("Cleaned", state.currentTranscript.ifBlank { "Waiting for analysis" })
+                if (state.transcriptEvents.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    state.transcriptEvents.take(5).forEach { Text("• $it", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium) }
+                }
             }
         }
-        item { TranscriptMonitorCard(state) }
+        item {
+            SectionCard("Transcript Brain", Icons.Filled.Bolt) {
+                val brain = state.transcriptBrain
+                if (brain == null) {
+                    Text("The brain runs after the recording is transcribed or stopped.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    InfoRow("Payload", brain.primaryPayload.ifBlank { "None" })
+                    InfoRow("Routine", brain.routineGuess)
+                    InfoRow("Confidence", "${(brain.confidence * 100).toInt()}%")
+                    InfoRow("Decision", if (brain.shouldPublish) "Ready" else "Review")
+                    InfoRow("Reason", brain.reasoning)
+                    if (brain.warnings.isNotEmpty()) InfoRow("Warnings", brain.warnings.joinToString(" • "))
+                    if (brain.backupPayloads.isNotEmpty()) InfoRow("Backups", brain.backupPayloads.joinToString(" • "))
+                }
+            }
+        }
+        item {
+            SectionCard("Output", Icons.Filled.Publish) {
+                val payload = state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: "Nothing ready"
+                InfoRow("Inject", if (state.settings.injectEnabled) "Default ON" else "Disabled")
+                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Enter Inject Code in Inject tab" })
+                InfoRow("Payload", payload)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    PrimaryControlButton("Publish once", Icons.Filled.Publish, Modifier.weight(1f), onPublish)
+                    SecondaryControlButton("Copy", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(payload)) }
+                }
+            }
+        }
+        if (state.extractedData?.detectedItems?.isNotEmpty() == true) {
+            item {
+                SectionCard("Detected values", Icons.Filled.Article) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { state.extractedData.detectedItems.forEach { DetectedItemRow(it) } }
+                }
+            }
+        }
         if (state.errorMessage != null) item { AlertCard(state.errorMessage) }
     }
 }
@@ -286,7 +321,7 @@ private fun SessionHero(state: PerformanceUiState) {
                 Text(state.sessionState.label, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black, color = accent)
             }
         }
-        Text(if (state.isListeningVisible) "Listening is active. Audio saving is OFF by default." else "No active listening. Start intentionally before performance.", color = MaterialTheme.colorScheme.onSurface)
+        Text(if (state.isListeningVisible) "Recording or listening is active. Audio saving is OFF unless enabled." else "No active capture. Tap Start Recording before performance.", color = MaterialTheme.colorScheme.onSurface)
     }
 }
 
@@ -304,85 +339,15 @@ private fun PermissionReadinessCard(status: PermissionUiState, onRequestPermissi
 }
 
 @Composable
-private fun ProofScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
-    val clipboard = LocalClipboardManager.current
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item {
-            SectionCard("Transcript proof", Icons.Filled.Article) {
-                Text("This screen proves what WhisperCell heard before anything is published.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(8.dp))
-                InfoRow("Capture state", state.sessionState.label)
-                InfoRow("Provider status", state.providerActivity)
-                InfoRow("Last heard", state.lastTranscriptLine)
-                InfoRow("Raw transcript", state.rawCapturedTranscript.ifBlank { "Nothing captured yet" })
-                InfoRow("Cleaned transcript", state.currentTranscript.ifBlank { "Nothing processed yet" })
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryControlButton("Copy raw", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.rawCapturedTranscript)) }
-                    SecondaryControlButton("Copy cleaned", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.currentTranscript)) }
-                }
-            }
-        }
-        item {
-            SectionCard("Transcript Brain", Icons.Filled.Bolt) {
-                val brain = state.transcriptBrain
-                if (brain == null) {
-                    Text("Waiting for a finished capture. The brain runs after the Stop Phrase closes the transcript.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    InfoRow("Primary payload", brain.primaryPayload.ifBlank { "None" })
-                    InfoRow("Routine guess", brain.routineGuess)
-                    InfoRow("Confidence", "${(brain.confidence * 100).toInt()}%")
-                    InfoRow("Decision", if (brain.shouldPublish) "Safe to publish" else "Review before publishing")
-                    InfoRow("Reason", brain.reasoning)
-                    if (brain.backupPayloads.isNotEmpty()) InfoRow("Backups", brain.backupPayloads.joinToString(" • "))
-                    if (brain.rejectedValues.isNotEmpty()) InfoRow("Rejected/corrected", brain.rejectedValues.joinToString(" • "))
-                    if (brain.warnings.isNotEmpty()) InfoRow("Warnings", brain.warnings.joinToString(" • "))
-                    InfoRow("Emergency reveal", brain.emergencyRevealText)
-                }
-            }
-        }
-        item {
-            SectionCard("Detected values", Icons.Filled.Bolt) {
-                val items = state.extractedData?.detectedItems.orEmpty()
-                if (items.isEmpty()) {
-                    Text("No values detected yet. Start a session and use your Start/Stop phrases.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { items.forEach { DetectedItemRow(it) } }
-                }
-            }
-        }
-        item {
-            SectionCard("Selected output", Icons.Filled.Publish) {
-                InfoRow("Output", state.selectedMatch?.channel?.name ?: "No output selected")
-                InfoRow("Payload", state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: "Nothing ready")
-                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after code is set" })
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Publish once", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
-                    SecondaryControlButton("Copy payload", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: state.lastPublishedValue)) }
-                }
-            }
-        }
-        item { EmergencyRevealCard(state.transcriptBrain?.emergencyRevealText ?: state.selectedMatch?.payload ?: state.lastPublishedValue) }
-    }
-}
-
-@Composable
 private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             SectionCard("Active routine", Icons.Filled.Tune) {
                 InfoRow("Routine", state.activeProfile.name)
-                InfoRow("Start", primaryStartPhrase(state))
-                InfoRow("Stop", primaryStopPhrase(state))
+                InfoRow("Review", if (state.activeProfile.reviewModeEnabled) "On" else "Off")
+                InfoRow("Automation", if (state.activeProfile.fullAutomationEnabled) "Full automation" else "Manual publish")
                 SettingsToggleRow("Review Mode", state.activeProfile.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
-                SettingsToggleRow("Full Automation", state.activeProfile.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
-                Text("Outputs used by this routine", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                state.channels.forEach { channel -> SettingsToggleRow(channel.name, channel.id in state.activeProfile.activeChannelIds) { enabled -> viewModel.toggleProfileChannel(channel.id, enabled) } }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryControlButton("Duplicate", Icons.Filled.ContentCopy, Modifier.weight(1f), viewModel::duplicateActiveProfile)
-                    SecondaryControlButton("Delete", Icons.Filled.DeleteSweep, Modifier.weight(1f), viewModel::deleteActiveProfile)
-                }
+                SettingsToggleRow("Auto-publish", state.activeProfile.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
             }
         }
         items(state.profiles, key = { it.id }) { profile -> ProfileCard(profile, profile.id == state.activeProfile.id) { viewModel.activateProfile(profile.id) } }
@@ -392,8 +357,12 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
 @Composable
 private fun ChannelsScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { SectionCard("Output rules", Icons.Filled.Route) { Text("Channels decide which detected value becomes the published value.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        items(state.channels, key = { it.id }) { channel -> ChannelCard(channel, viewModel) }
+        item {
+            SectionCard("Outputs", Icons.Filled.Route) {
+                Text("Choose which output types WhisperCell is allowed to publish. Payload formatting stays automatic.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        items(state.channels, key = { it.id }) { channel -> SimpleChannelCard(channel, channel.id in state.activeProfile.activeChannelIds, viewModel) }
     }
 }
 
@@ -403,7 +372,7 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             SectionCard("Inject setup", Icons.Filled.Hub) {
-                SettingsToggleRow("Enable Inject", state.settings.injectEnabled, viewModel::toggleInjectEnabled)
+                SettingsToggleRow("Publish to Inject by default", state.settings.injectEnabled, viewModel::toggleInjectEnabled)
                 OutlinedTextField(
                     value = state.settings.selectionCode,
                     onValueChange = viewModel::updateSelectionCode,
@@ -412,9 +381,8 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
                     supportingText = { Text("Enter your Inject code only. Do not paste the full URL. Max 7 letters/numbers.") },
                     singleLine = true
                 )
-                InfoRow("Status", state.injectStatus.label)
-                InfoRow("Selection endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/{INJECT_CODE}/selection" })
-                Text("The endpoint stays fixed. WhisperCell sends the payload as the value field.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/{INJECT_CODE}/selection" })
+                Text("WhisperCell sends one POST with JSON value when the brain selects a payload.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     PrimaryControlButton("Test Inject", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::testInject)
                     SecondaryControlButton("Copy endpoint", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.lastInjectUrl)) }
@@ -422,15 +390,12 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
             }
         }
         item {
-            SectionCard("Publish behavior", Icons.Filled.Publish) {
-                InfoRow("Send method", "POST JSON: value")
-                InfoRow("Timeout", "${state.settings.injectTimeoutSeconds} seconds")
-                InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once on failure" else "Single attempt")
-                InfoRow("Last sent value", state.lastPublishedValue)
-                PrimaryControlButton("Publish selected value", Icons.Filled.Publish, Modifier.fillMaxWidth(), viewModel::publishSelectedValue)
+            SectionCard("Last publish", Icons.Filled.Publish) {
+                InfoRow("Status", state.injectStatus.label)
+                InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once" else "Single attempt")
+                InfoRow("Value", state.lastPublishedValue)
             }
         }
-        item { EmergencyRevealCard(state.transcriptBrain?.emergencyRevealText ?: state.selectedMatch?.payload ?: state.lastPublishedValue) }
     }
 }
 
@@ -447,51 +412,35 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { PermissionReadinessCard(permissionStatus, onRequestPermissions) }
         item {
-            SectionCard("Start and stop phrases", Icons.Filled.Tune) {
-                SettingsToggleRow("Start Phrase enabled", state.settings.startPhraseEnabled, viewModel::toggleStartPhraseEnabled)
-                OutlinedTextField(value = primaryStartPhrase(state), onValueChange = viewModel::updateGlobalStartPhrase, modifier = Modifier.fillMaxWidth(), label = { Text("Global Start Phrase") }, singleLine = true)
-                SettingsToggleRow("Stop Phrase enabled", state.settings.stopPhraseEnabled, viewModel::toggleStopPhraseEnabled)
-                OutlinedTextField(value = primaryStopPhrase(state), onValueChange = viewModel::updateGlobalStopPhrase, modifier = Modifier.fillMaxWidth(), label = { Text("Global Stop Phrase") }, singleLine = true)
-                SettingsToggleRow("Remove phrases from transcript", state.settings.removeStartAndStopPhrases, viewModel::toggleRemovePhrases)
-                InfoRow("Silence behavior", "Ignore silence as stop trigger")
-                OutlinedTextField(value = state.settings.maximumCaptureSeconds.toString(), onValueChange = viewModel::updateMaximumCaptureSeconds, modifier = Modifier.fillMaxWidth(), label = { Text("Maximum capture seconds") }, singleLine = true)
+            SectionCard("Capture", Icons.Filled.Mic) {
+                Text("Default mode is tap-to-record. Start Phrase is optional. Stop phrases close the recording when detected in transcript.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SettingsToggleRow("Use Start Phrase", state.settings.startPhraseEnabled, viewModel::toggleStartPhraseEnabled)
+                OutlinedTextField(value = primaryStartPhrase(state), onValueChange = viewModel::updateGlobalStartPhrase, modifier = Modifier.fillMaxWidth(), label = { Text("Start Phrase") }, singleLine = true)
+                SettingsToggleRow("Use Stop Phrase", state.settings.stopPhraseEnabled, viewModel::toggleStopPhraseEnabled)
+                OutlinedTextField(value = primaryStopPhrase(state), onValueChange = viewModel::updateGlobalStopPhrase, modifier = Modifier.fillMaxWidth(), label = { Text("Stop Phrase") }, singleLine = true)
+                OutlinedTextField(value = state.settings.maximumCaptureSeconds.toString(), onValueChange = viewModel::updateMaximumCaptureSeconds, modifier = Modifier.fillMaxWidth(), label = { Text("Max capture seconds") }, singleLine = true)
             }
         }
-        item { SectionCard("Speech providers", Icons.Filled.Mic) { state.speechProviders.forEach { provider -> ProviderRow(provider, provider.id == state.settings.selectedSpeechProviderId) { viewModel.selectSpeechProvider(provider.id) } } } }
+        item { SectionCard("Speech and transcription", Icons.Filled.Settings) { state.speechProviders.forEach { provider -> ProviderRow(provider, provider.id == state.settings.selectedSpeechProviderId) { viewModel.selectSpeechProvider(provider.id) } } } }
         item {
-            SectionCard("OpenAI / GPT extraction", Icons.Filled.Bolt) {
+            SectionCard("OpenAI", Icons.Filled.Bolt) {
                 SettingsToggleRow("Enable GPT extraction", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
                 OutlinedTextField(value = state.settings.openAiApiKey, onValueChange = viewModel::updateOpenAiApiKey, modifier = Modifier.fillMaxWidth(), label = { Text("OpenAI API Key") }, singleLine = true)
-                OutlinedTextField(value = state.settings.openAiModel, onValueChange = viewModel::updateOpenAiModel, modifier = Modifier.fillMaxWidth(), label = { Text("Model or custom model name") }, singleLine = true)
-                SettingsToggleRow("Realtime transcription", state.settings.openAiRealtimeEnabled, viewModel::toggleOpenAiRealtime)
-                SettingsToggleRow("Chunk transcription", state.settings.openAiChunkEnabled, viewModel::toggleOpenAiChunk)
-                InfoRow("Validation", state.settings.openAiValidationStatus)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryControlButton("Validate", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::validateOpenAiKey)
-                    PrimaryControlButton("Run Test", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testOpenAiTranscription)
-                }
+                OutlinedTextField(value = state.settings.openAiModel, onValueChange = viewModel::updateOpenAiModel, modifier = Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
             }
         }
         item {
-            SectionCard("ElevenLabs Speech to Text", Icons.Filled.Article) {
+            SectionCard("ElevenLabs", Icons.Filled.Article) {
                 SettingsToggleRow("Enable ElevenLabs", state.settings.elevenLabsEnabled, viewModel::toggleElevenLabsEnabled)
                 OutlinedTextField(value = state.settings.elevenLabsApiKey, onValueChange = viewModel::updateElevenLabsApiKey, modifier = Modifier.fillMaxWidth(), label = { Text("ElevenLabs API Key") }, singleLine = true)
-                OutlinedTextField(value = state.settings.elevenLabsModel, onValueChange = viewModel::updateElevenLabsModel, modifier = Modifier.fillMaxWidth(), label = { Text("Model/provider mode") }, singleLine = true)
-                InfoRow("Validation", state.settings.elevenLabsValidationStatus)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryControlButton("Validate", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::validateElevenLabsKey)
-                    PrimaryControlButton("Run Test", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testElevenLabsTranscription)
-                }
+                OutlinedTextField(value = state.settings.elevenLabsModel, onValueChange = viewModel::updateElevenLabsModel, modifier = Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
             }
         }
         item {
-            SectionCard("Privacy and automation", Icons.Filled.Settings) {
-                SettingsToggleRow("Review Mode", state.settings.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
-                SettingsToggleRow("Full Automation", state.settings.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
+            SectionCard("Privacy", Icons.Filled.Settings) {
                 SettingsToggleRow("Audio Save", state.settings.audioSavingEnabled, viewModel::toggleAudioSaving)
                 SettingsToggleRow("Keep logs for 24 hours", state.settings.keepLogsFor24Hours, viewModel::toggleKeepLogs24Hours)
-                InfoRow("Transcript Save", state.settings.transcriptSavePolicy)
-                SettingsToggleRow("Continue listening after publish", state.settings.continueListeningAfterPublish, viewModel::toggleContinueListening)
+                SettingsToggleRow("Continue after publish", state.settings.continueListeningAfterPublish, viewModel::toggleContinueListening)
             }
         }
     }
@@ -500,8 +449,8 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
 @Composable
 private fun HelpScreen() {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        item { SectionCard("Welcome to WhisperCell", Icons.Filled.Help) { Text("WhisperCell listens for a natural start phrase, captures conversation, extracts useful performance information, and publishes the chosen value using your Inject Code.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        item { SectionCard("Basic setup", Icons.Filled.RadioButtonChecked) { listOf("Choose a routine.", "Set natural start and stop phrases.", "Enter your Inject Code only.", "Start Background Session.", "Perform normally.", "Confirm transcript proof.", "Let Transcript Brain choose the safest payload.", "Publish the selected value once.").forEachIndexed { index, step -> Text("${index + 1}. $step", color = MaterialTheme.colorScheme.onSurface) } } }
+        item { SectionCard("Welcome to WhisperCell", Icons.Filled.Help) { Text("WhisperCell records a performance, transcribes it, lets Transcript Brain choose the best payload, and publishes once to Inject.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+        item { SectionCard("Basic flow", Icons.Filled.RadioButtonChecked) { listOf("Enter your Inject Code.", "Tap Start Recording.", "Talk naturally.", "Stop manually or say your Stop Phrase.", "Let Transcript Brain choose the payload.", "Publish once to Inject.").forEachIndexed { index, step -> Text("${index + 1}. $step", color = MaterialTheme.colorScheme.onSurface) } } }
     }
 }
 
@@ -544,35 +493,25 @@ private fun SettingsToggleRow(label: String, checked: Boolean, onCheckedChange: 
 }
 
 @Composable
-private fun StatusChip(text: String) { Surface(shape = RoundedCornerShape(999.dp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))) { Text(text, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary) } }
-
-@Composable
-private fun ListeningBeacon(isActive: Boolean) { Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(10.dp).clip(CircleShape).background(if (isActive) Color(0xFF39D7C8) else Color(0xFF45545A))); Spacer(Modifier.width(6.dp)); Text(if (isActive) "LISTENING" else "IDLE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+private fun ListeningBeacon(isActive: Boolean) { Row(verticalAlignment = Alignment.CenterVertically) { Box(Modifier.size(10.dp).clip(CircleShape).background(if (isActive) Color(0xFF39D7C8) else Color(0xFF45545A))); Spacer(Modifier.width(6.dp)); Text(if (isActive) "RECORDING" else "IDLE", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
 
 @Composable
 private fun DetectedItemRow(item: DetectedItem) { Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), color = Color(0xFF0F1B24), border = BorderStroke(1.dp, Color(0xFF203B45))) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Column(Modifier.weight(1f)) { Text(item.category.label, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.secondary); Text(item.normalizedValue, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold); Text("Source: ${item.sourcePhrase}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis) }; Text("${(item.confidence * 100).toInt()}%", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) } } }
 
 @Composable
-private fun ProfileCard(profile: PerformanceProfile, isActive: Boolean, onActivate: () -> Unit) { SectionCard(profile.name, if (isActive) Icons.Filled.RadioButtonChecked else Icons.Filled.Tune) { InfoRow("Categories", profile.activeCategories.joinToString { it.label }); InfoRow("Mode", if (profile.fullAutomationEnabled) "Full Automation" else "Review Mode"); Button(onClick = onActivate, enabled = !isActive, modifier = Modifier.fillMaxWidth()) { Text(if (isActive) "Active routine" else "Activate routine") } } }
+private fun ProfileCard(profile: PerformanceProfile, isActive: Boolean, onActivate: () -> Unit) { SectionCard(profile.name, if (isActive) Icons.Filled.RadioButtonChecked else Icons.Filled.Tune) { InfoRow("Categories", profile.activeCategories.joinToString { it.label }); InfoRow("Mode", if (profile.fullAutomationEnabled) "Auto-publish" else "Manual publish"); Button(onClick = onActivate, enabled = !isActive, modifier = Modifier.fillMaxWidth()) { Text(if (isActive) "Active routine" else "Activate routine") } } }
 
 @Composable
-private fun ChannelCard(channel: Channel, viewModel: WhisperCellViewModel) { SectionCard(channel.name, Icons.Filled.Route) { SettingsToggleRow("Enabled", channel.enabled) { viewModel.toggleChannelEnabled(channel.id, it) }; InfoRow("Input category", channel.inputCategories.joinToString { it.label }); OutlinedTextField(value = channel.payloadFormat, onValueChange = { viewModel.updateChannelPayloadFormat(channel.id, it) }, modifier = Modifier.fillMaxWidth(), label = { Text("Payload format") }, singleLine = true); SettingsToggleRow("Auto-publish", channel.autoPublish) { viewModel.toggleChannelAutoPublish(channel.id, it) }; InfoRow("Confidence", "${(channel.confidenceThreshold * 100).toInt()}%"); PrimaryControlButton("Test output", Icons.Filled.Bolt, Modifier.fillMaxWidth()) { viewModel.testChannel(channel.id) } } }
+private fun SimpleChannelCard(channel: Channel, active: Boolean, viewModel: WhisperCellViewModel) { SectionCard(channel.name.removeSuffix(" Channel"), Icons.Filled.Route) { InfoRow("Detects", channel.inputCategories.joinToString { it.label }); SettingsToggleRow("Allowed for active routine", active) { viewModel.toggleProfileChannel(channel.id, it) } } }
 
 @Composable
-private fun ProviderRow(provider: SpeechProviderInfo, isSelected: Boolean, onSelect: () -> Unit) { Surface(Modifier.fillMaxWidth().padding(vertical = 5.dp), shape = RoundedCornerShape(14.dp), color = if (isSelected) Color(0xFF142936) else Color(0xFF0F1B24), border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF203B45))) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(provider.displayName, fontWeight = FontWeight.Bold); Text("Mode: ${provider.mode} • Background: ${if (provider.supportsBackground) "Yes" else "No"} • Partials: ${if (provider.supportsPartialResults) "Yes" else "No"}", color = MaterialTheme.colorScheme.onSurfaceVariant); Text(provider.status, color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium); OutlinedButton(onClick = onSelect, enabled = !isSelected, modifier = Modifier.fillMaxWidth()) { Text(if (isSelected) "Selected provider" else "Select provider") } } } }
+private fun ProviderRow(provider: SpeechProviderInfo, isSelected: Boolean, onSelect: () -> Unit) { Surface(Modifier.fillMaxWidth().padding(vertical = 5.dp), shape = RoundedCornerShape(14.dp), color = if (isSelected) Color(0xFF142936) else Color(0xFF0F1B24), border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF203B45))) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(provider.displayName, fontWeight = FontWeight.Bold); Text("Mode: ${provider.mode} • Background: ${if (provider.supportsBackground) "Yes" else "No"}", color = MaterialTheme.colorScheme.onSurfaceVariant); Text(provider.status, color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium); OutlinedButton(onClick = onSelect, enabled = !isSelected, modifier = Modifier.fillMaxWidth()) { Text(if (isSelected) "Selected" else "Select") } } } }
 
 @Composable
 private fun LogRow(log: LogEntry) { val color = when (log.level) { LogLevel.Success -> Color(0xFF89F29A); LogLevel.Warning -> Color(0xFFFFB85C); LogLevel.Error -> Color(0xFFFF6B6B); LogLevel.Info -> MaterialTheme.colorScheme.primary }; Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = Color(0xFF0B121A), border = BorderStroke(1.dp, color.copy(alpha = 0.35f))) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) { Text(log.timestamp, color = color, style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(70.dp)); Text(log.message, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f)) } } }
 
 @Composable
-private fun EmergencyRevealCard(value: String) { SectionCard("Emergency reveal screen", Icons.Filled.ContentCopy) { Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = Color(0xFF111820), border = BorderStroke(1.dp, Color(0xFF2A3B46))) { Column(Modifier.padding(18.dp)) { Text("Quote", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelMedium); Text(if (value.isBlank() || value == "Nothing published yet.") "Keep one clear image in mind." else value, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onSurface) } } } }
-
-@Composable
 private fun AlertCard(message: String) { Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f), border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.55f))) { Text(message, modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold) } }
 
-@Composable
-private fun TranscriptMonitorCard(state: PerformanceUiState) { SectionCard("Transcript monitor", Icons.Filled.Podcasts) { InfoRow("Speech provider", state.providerActivity); InfoRow("Extraction", state.aiActivity); InfoRow("Last transcript", state.lastTranscriptLine); InfoRow("Raw captured", state.rawCapturedTranscript.ifBlank { "Nothing captured yet" }); InfoRow("Cleaned", state.currentTranscript.ifBlank { "Nothing processed yet" }); if (state.transcriptEvents.isNotEmpty()) { Spacer(Modifier.height(8.dp)); state.transcriptEvents.take(5).forEach { Text("• $it", color = MaterialTheme.colorScheme.onSurface, style = MaterialTheme.typography.bodyMedium) } } } }
-
-private fun primaryStartPhrase(state: PerformanceUiState): String = state.settings.startPhrases.firstOrNull().orEmpty().ifBlank { "Picture this clearly for me" }
-private fun primaryStopPhrase(state: PerformanceUiState): String = state.settings.stopPhrases.firstOrNull().orEmpty().ifBlank { "Perfect" }
-private fun detectedSummary(data: ExtractedPerformanceData?): String { val items = data?.detectedItems.orEmpty(); return if (items.isEmpty()) "Awaiting transcript" else items.take(4).joinToString(" • ") { "${it.category.label}: ${it.normalizedValue}" } }
+private fun primaryStartPhrase(state: PerformanceUiState): String = state.settings.startPhrases.firstOrNull().orEmpty().ifBlank { "open" }
+private fun primaryStopPhrase(state: PerformanceUiState): String = state.settings.stopPhrases.firstOrNull().orEmpty().ifBlank { "perfect" }
