@@ -10,7 +10,7 @@ data class AppSettings(
     val silenceBehavior: SilenceBehavior = SilenceBehavior.Ignore,
     val maximumCaptureSeconds: Int = 180,
     val manualBackupEnabled: Boolean = true,
-    val selectedSpeechProviderId: String = "native_recorder",
+    val selectedSpeechProviderId: String = "android_builtin",
     val openAiTranscriptionEnabled: Boolean = false,
     val openAiApiKey: String = "",
     val openAiModel: String = "gpt-4o-mini-transcribe",
