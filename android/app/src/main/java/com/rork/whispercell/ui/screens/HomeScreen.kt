@@ -28,7 +28,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Article
 import androidx.compose.material.icons.filled.Bolt
-import androidx.compose.material.icons.filled.CallSplit
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Emergency
@@ -95,7 +94,7 @@ import com.rork.whispercell.viewmodels.WhisperCellViewModel
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
     Performance("Performance", Icons.Filled.Mic),
-    Review("Review", Icons.Filled.Article),
+    Review("Proof", Icons.Filled.Article),
     Profiles("Routines", Icons.Filled.Tune),
     Channels("Outputs", Icons.Filled.Route),
     Inject("Inject", Icons.Filled.Hub),
@@ -214,7 +213,7 @@ fun HomeScreen(
         ) {
             when (selectedTab) {
                 MainTab.Performance -> PerformanceScreen(state, permissionStatus, startBackgroundSession, stopSession, panicStop, viewModel::pauseListening, viewModel::resumeListening, requestPermissions, viewModel::clearSession)
-                MainTab.Review -> ReviewScreen(state, viewModel)
+                MainTab.Review -> ProofScreen(state, viewModel)
                 MainTab.Profiles -> ProfilesScreen(state, viewModel)
                 MainTab.Channels -> ChannelsScreen(state, viewModel)
                 MainTab.Inject -> InjectScreen(state, viewModel)
@@ -305,49 +304,42 @@ private fun PermissionReadinessCard(status: PermissionUiState, onRequestPermissi
 }
 
 @Composable
-private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
+private fun ProofScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
     val clipboard = LocalClipboardManager.current
-    val presets = listOf(
-        "I want to go to Spain and meet Tom Cruise on June 2nd, 2035.",
-        "My song is Bohemian Rhapsody by Queen.",
-        "I'm thinking of the Queen of Hearts.",
-        "My birthday is March 14.",
-        "The serial number is A12345678B."
-    )
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
-            SectionCard("Mock Transcript Mode", Icons.Filled.Article) {
-                OutlinedTextField(value = state.mockTranscriptInput, onValueChange = viewModel::updateMockTranscript, modifier = Modifier.fillMaxWidth(), label = { Text("Manual transcript input") }, minLines = 3)
-                Spacer(Modifier.height(10.dp))
-                presets.forEach { preset ->
-                    OutlinedButton(onClick = { viewModel.loadPresetTranscript(preset) }, modifier = Modifier.fillMaxWidth()) { Text(preset, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-                }
-                Spacer(Modifier.height(10.dp))
+            SectionCard("Transcript proof", Icons.Filled.Article) {
+                Text("This screen proves what WhisperCell heard before anything is published.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                InfoRow("Capture state", state.sessionState.label)
+                InfoRow("Provider status", state.providerActivity)
+                InfoRow("Last heard", state.lastTranscriptLine)
+                InfoRow("Raw transcript", state.rawCapturedTranscript.ifBlank { "Nothing captured yet" })
+                InfoRow("Cleaned transcript", state.currentTranscript.ifBlank { "Nothing processed yet" })
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryControlButton("Fake partials", Icons.Filled.Podcasts, Modifier.weight(1f), viewModel::fakePartialPlayback)
-                    SecondaryControlButton("Run extraction", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::runExtractionOnly)
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Run routine", Icons.Filled.CallSplit, Modifier.weight(1f), viewModel::runSelectedProfile)
-                    PrimaryControlButton("Simulate", Icons.Filled.Publish, Modifier.weight(1f), viewModel::simulateInjectPublish)
+                    SecondaryControlButton("Copy raw", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.rawCapturedTranscript)) }
+                    SecondaryControlButton("Copy cleaned", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.currentTranscript)) }
                 }
             }
         }
         item {
             SectionCard("Detected values", Icons.Filled.Bolt) {
                 val items = state.extractedData?.detectedItems.orEmpty()
-                if (items.isEmpty()) Text("No values detected yet.", color = MaterialTheme.colorScheme.onSurfaceVariant) else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { items.forEach { DetectedItemRow(it) } }
+                if (items.isEmpty()) {
+                    Text("No values detected yet. Start a session and use your Start/Stop phrases.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { items.forEach { DetectedItemRow(it) } }
+                }
             }
         }
         item {
-            SectionCard("Publish review", Icons.Filled.Publish) {
-                InfoRow("Selected output", state.selectedMatch?.channel?.name ?: "No output selected")
+            SectionCard("Selected output", Icons.Filled.Publish) {
+                InfoRow("Output", state.selectedMatch?.channel?.name ?: "No output selected")
                 InfoRow("Payload", state.selectedMatch?.payload ?: "Nothing ready")
-                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after publish/test" })
+                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after code is set" })
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Publish", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
+                    PrimaryControlButton("Publish once", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
                     SecondaryControlButton("Copy payload", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.selectedMatch?.payload ?: state.lastPublishedValue)) }
                 }
             }
@@ -413,10 +405,9 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
         }
         item {
             SectionCard("Publish behavior", Icons.Filled.Publish) {
-                InfoRow("Send method", "POST value field")
-                InfoRow("Receive method", "GET same endpoint")
+                InfoRow("Send method", "POST JSON: value")
                 InfoRow("Timeout", "${state.settings.injectTimeoutSeconds} seconds")
-                InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once on failure" else "No retry")
+                InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once on failure" else "Single attempt")
                 InfoRow("Last sent value", state.lastPublishedValue)
                 PrimaryControlButton("Publish selected value", Icons.Filled.Publish, Modifier.fillMaxWidth(), viewModel::publishSelectedValue)
             }
@@ -492,7 +483,7 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
 private fun HelpScreen() {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { SectionCard("Welcome to WhisperCell", Icons.Filled.Help) { Text("WhisperCell listens for a natural start phrase, captures conversation, extracts useful performance information, and publishes the chosen value using your Inject Code.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        item { SectionCard("Basic setup", Icons.Filled.RadioButtonChecked) { listOf("Choose a routine.", "Set natural start and stop phrases.", "Enter your Inject Code only.", "Start Background Session.", "Perform normally.", "Review or publish the selected value.").forEachIndexed { index, step -> Text("${index + 1}. $step", color = MaterialTheme.colorScheme.onSurface) } } }
+        item { SectionCard("Basic setup", Icons.Filled.RadioButtonChecked) { listOf("Choose a routine.", "Set natural start and stop phrases.", "Enter your Inject Code only.", "Start Background Session.", "Perform normally.", "Confirm transcript proof.", "Publish the selected value once.").forEachIndexed { index, step -> Text("${index + 1}. $step", color = MaterialTheme.colorScheme.onSurface) } } }
     }
 }
 
