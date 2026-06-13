@@ -3,6 +3,8 @@ package com.rork.whispercell.services
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -26,10 +28,12 @@ class AndroidSpeechProvider(
         status = "Live microphone ready"
     )
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var recognizer: SpeechRecognizer? = null
     private var sessionConfig: SpeechSessionConfig? = null
     private var isPaused: Boolean = false
     private var isRunning: Boolean = false
+    private var restartPending: Boolean = false
     private var partialCallback: (String) -> Unit = {}
     private var finalCallback: (String) -> Unit = {}
     private var errorCallback: (SpeechError) -> Unit = {}
@@ -38,22 +42,21 @@ class AndroidSpeechProvider(
         sessionConfig = config
         isPaused = false
         isRunning = true
+        restartPending = false
 
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             errorCallback(SpeechError("Android speech recognition is not available on this device.", recoverable = false))
             return
         }
 
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(listener())
-            startListening(intentFor(config))
-        }
+        startRecognizer(config)
     }
 
     override suspend fun stopSession() {
         isRunning = false
         isPaused = false
+        restartPending = false
+        mainHandler.removeCallbacksAndMessages(null)
         recognizer?.stopListening()
         recognizer?.destroy()
         recognizer = null
@@ -61,6 +64,7 @@ class AndroidSpeechProvider(
 
     override suspend fun pauseSession() {
         isPaused = true
+        restartPending = false
         recognizer?.stopListening()
     }
 
@@ -68,11 +72,7 @@ class AndroidSpeechProvider(
         val config = sessionConfig ?: return
         isPaused = false
         isRunning = true
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(listener())
-            startListening(intentFor(config))
-        }
+        startRecognizer(config)
     }
 
     override fun onPartialTranscript(callback: (String) -> Unit) { partialCallback = callback }
@@ -95,29 +95,50 @@ class AndroidSpeechProvider(
         override fun onResults(results: Bundle?) {
             val text = results.bestText()
             if (text.isNotBlank()) finalCallback(text)
-            restartIfNeeded()
+            restartIfNeeded(delayMs = 350L)
         }
 
         override fun onError(error: Int) {
             when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> restartIfNeeded()
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> restartIfNeeded(delayMs = 350L)
+                SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
+                SpeechRecognizer.ERROR_SERVER_DISCONNECTED,
+                SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> restartIfNeeded(delayMs = 1_250L)
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> errorCallback(SpeechError("Microphone permission is missing.", recoverable = false))
+                SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+                SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> errorCallback(SpeechError("Selected speech language is not available on this device.", recoverable = false))
                 else -> {
                     errorCallback(SpeechError("Android speech recognition error $error"))
-                    restartIfNeeded()
+                    restartIfNeeded(delayMs = 900L)
                 }
             }
         }
     }
 
-    private fun restartIfNeeded() {
-        val config = sessionConfig ?: return
-        if (!isRunning || isPaused) return
-        recognizer?.destroy()
-        recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-            setRecognitionListener(listener())
-            startListening(intentFor(config))
+    private fun startRecognizer(config: SpeechSessionConfig) {
+        mainHandler.post {
+            recognizer?.destroy()
+            recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                setRecognitionListener(listener())
+                startListening(intentFor(config))
+            }
         }
+    }
+
+    private fun restartIfNeeded(delayMs: Long) {
+        val config = sessionConfig ?: return
+        if (!isRunning || isPaused || restartPending) return
+        restartPending = true
+        mainHandler.postDelayed({
+            restartPending = false
+            if (!isRunning || isPaused) return@postDelayed
+            recognizer?.destroy()
+            recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                setRecognitionListener(listener())
+                startListening(intentFor(config))
+            }
+        }, delayMs)
     }
 
     private fun intentFor(config: SpeechSessionConfig): Intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
