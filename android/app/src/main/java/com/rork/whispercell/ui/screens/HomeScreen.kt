@@ -263,9 +263,9 @@ private fun PerformanceScreen(
                 InfoRow("Start Phrase", primaryStartPhrase(state))
                 InfoRow("Stop Phrase", primaryStopPhrase(state))
                 InfoRow("Outputs", state.activeChannels.joinToString { it.name.removeSuffix(" Channel") }.ifBlank { "No active outputs" })
-                InfoRow("Selection code", state.settings.selectionCode.ifBlank { "Not set" })
+                InfoRow("Inject code", state.settings.selectionCode.ifBlank { "Not set" })
                 InfoRow("Status", state.injectStatus.label)
-                InfoRow("URL", state.lastInjectUrl.ifBlank { "Generated after code/value are ready" })
+                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after code is set" })
             }
         }
         item { TranscriptMonitorCard(state) }
@@ -344,7 +344,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
             SectionCard("Publish review", Icons.Filled.Publish) {
                 InfoRow("Selected output", state.selectedMatch?.channel?.name ?: "No output selected")
                 InfoRow("Payload", state.selectedMatch?.payload ?: "Nothing ready")
-                InfoRow("URL", state.lastInjectUrl.ifBlank { "Generated after publish/test" })
+                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after publish/test" })
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     PrimaryControlButton("Publish", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
@@ -403,16 +403,18 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
                     singleLine = true
                 )
                 InfoRow("Status", state.injectStatus.label)
-                InfoRow("Generated URL", state.lastInjectUrl.ifBlank { "https://11z.co/_w/{INJECT_CODE}/selection?value={ENCODED_VALUE}" })
+                InfoRow("Selection endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/{INJECT_CODE}/selection" })
+                Text("The endpoint stays fixed. WhisperCell sends the payload as the value field.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     PrimaryControlButton("Test Inject", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::testInject)
-                    SecondaryControlButton("Copy URL", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.lastInjectUrl)) }
+                    SecondaryControlButton("Copy endpoint", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.lastInjectUrl)) }
                 }
             }
         }
         item {
             SectionCard("Publish behavior", Icons.Filled.Publish) {
-                InfoRow("Send method", "GET with value parameter")
+                InfoRow("Send method", "POST value field")
+                InfoRow("Receive method", "GET same endpoint")
                 InfoRow("Timeout", "${state.settings.injectTimeoutSeconds} seconds")
                 InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once on failure" else "No retry")
                 InfoRow("Last sent value", state.lastPublishedValue)
