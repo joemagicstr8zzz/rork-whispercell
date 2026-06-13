@@ -50,7 +50,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -69,7 +68,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -83,7 +81,6 @@ import com.rork.whispercell.models.LogEntry
 import com.rork.whispercell.models.LogLevel
 import com.rork.whispercell.models.PerformanceProfile
 import com.rork.whispercell.models.PerformanceUiState
-import com.rork.whispercell.models.SpeechProviderInfo
 import com.rork.whispercell.services.WhisperCellForegroundService
 import com.rork.whispercell.viewmodels.WhisperCellViewModel
 
@@ -364,7 +361,7 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
         item { PermissionReadinessCard(permissionStatus, onRequestPermissions) }
         item {
             SectionCard("Capture", Icons.Filled.Mic) {
-                Text("Default mode is tap-to-record. Start Phrase is optional. Stop phrases close the recording when detected in transcript.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Native Recorder is always the microphone engine. OpenAI and ElevenLabs are transcription/analysis services, not microphone choices.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 SettingsToggleRow("Use Start Phrase", state.settings.startPhraseEnabled, viewModel::toggleStartPhraseEnabled)
                 OutlinedTextField(value = primaryStartPhrase(state), onValueChange = viewModel::updateGlobalStartPhrase, modifier = Modifier.fillMaxWidth(), label = { Text("Start Phrase") }, singleLine = true)
                 SettingsToggleRow("Use Stop Phrase", state.settings.stopPhraseEnabled, viewModel::toggleStopPhraseEnabled)
@@ -379,17 +376,16 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
                 InfoRow("Transcript retention", state.settings.transcriptSavePolicy)
             }
         }
-        item { SectionCard("Speech and transcription", Icons.Filled.Settings) { state.speechProviders.forEach { provider -> ProviderRow(provider, provider.id == state.settings.selectedSpeechProviderId) { viewModel.selectSpeechProvider(provider.id) } } } }
         item {
             SectionCard("OpenAI", Icons.Filled.Bolt) {
-                SettingsToggleRow("Enable OpenAI transcription/analysis", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
+                SettingsToggleRow("Use OpenAI for transcription/analysis", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
                 OutlinedTextField(value = state.settings.openAiApiKey, onValueChange = viewModel::updateOpenAiApiKey, modifier = Modifier.fillMaxWidth(), label = { Text("OpenAI API Key") }, singleLine = true)
                 OutlinedTextField(value = state.settings.openAiModel, onValueChange = viewModel::updateOpenAiModel, modifier = Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
             }
         }
         item {
             SectionCard("ElevenLabs", Icons.Filled.Article) {
-                SettingsToggleRow("Enable ElevenLabs transcription", state.settings.elevenLabsEnabled, viewModel::toggleElevenLabsEnabled)
+                SettingsToggleRow("Use ElevenLabs for transcription", state.settings.elevenLabsEnabled, viewModel::toggleElevenLabsEnabled)
                 OutlinedTextField(value = state.settings.elevenLabsApiKey, onValueChange = viewModel::updateElevenLabsApiKey, modifier = Modifier.fillMaxWidth(), label = { Text("ElevenLabs API Key") }, singleLine = true)
                 OutlinedTextField(value = state.settings.elevenLabsModel, onValueChange = viewModel::updateElevenLabsModel, modifier = Modifier.fillMaxWidth(), label = { Text("Model") }, singleLine = true)
             }
@@ -427,7 +423,7 @@ private fun PrimaryControlButton(text: String, icon: ImageVector, modifier: Modi
 
 @Composable
 private fun SecondaryControlButton(text: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick, modifier = modifier.height(52.dp), shape = RoundedCornerShape(16.dp)) { Icon(icon, contentDescription = null); Spacer(Modifier.width(6.dp)); Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+    Button(onClick = onClick, modifier = modifier.height(52.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.outlinedButtonColors()) { Icon(icon, contentDescription = null); Spacer(Modifier.width(6.dp)); Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis) }
 }
 
 @Composable
@@ -454,9 +450,6 @@ private fun ProfileCard(profile: PerformanceProfile, isActive: Boolean, onActiva
 
 @Composable
 private fun SimpleChannelCard(channel: Channel, active: Boolean, viewModel: WhisperCellViewModel) { SectionCard(channel.name.removeSuffix(" Channel"), Icons.Filled.Route) { InfoRow("Detects", channel.inputCategories.joinToString { it.label }); SettingsToggleRow("Allowed", active) { viewModel.toggleProfileChannel(channel.id, it) } } }
-
-@Composable
-private fun ProviderRow(provider: SpeechProviderInfo, isSelected: Boolean, onSelect: () -> Unit) { Surface(Modifier.fillMaxWidth().padding(vertical = 5.dp), shape = RoundedCornerShape(14.dp), color = if (isSelected) Color(0xFF142936) else Color(0xFF0F1B24), border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF203B45))) { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { Text(provider.displayName, fontWeight = FontWeight.Bold); Text(provider.status, color = MaterialTheme.colorScheme.onSurfaceVariant); OutlinedButton(onClick = onSelect, enabled = !isSelected, modifier = Modifier.fillMaxWidth()) { Text(if (isSelected) "Selected" else "Select") } } } }
 
 @Composable
 private fun LogRow(log: LogEntry) { val color = when (log.level) { LogLevel.Success -> Color(0xFF89F29A); LogLevel.Warning -> Color(0xFFFFB85C); LogLevel.Error -> Color(0xFFFF6B6B); LogLevel.Info -> MaterialTheme.colorScheme.primary }; Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp), color = Color(0xFF0B121A), border = BorderStroke(1.dp, color.copy(alpha = 0.35f))) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) { Text(log.timestamp, color = color, style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(70.dp)); Text(log.message, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.weight(1f)) } } }
