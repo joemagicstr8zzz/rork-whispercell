@@ -6,31 +6,22 @@ import com.rork.whispercell.models.SpeechProviderMode
 object ProviderCatalog {
     val providers: List<SpeechProviderInfo> = listOf(
         SpeechProviderInfo(
-            id = "android_builtin",
-            displayName = "Android Built-In Speech Recognition",
+            id = "native_recorder",
+            displayName = "Native Recorder",
             mode = SpeechProviderMode.Live,
-            supportsBackground = false,
+            supportsBackground = true,
             supportsPartialResults = true,
-            supportsTimestamps = false,
-            status = "Native implementation boundary"
+            supportsTimestamps = true,
+            status = "Continuous recording engine"
         ),
         SpeechProviderInfo(
             id = "openai_chunk",
-            displayName = "OpenAI Transcription — Chunk",
+            displayName = "OpenAI Transcription",
             mode = SpeechProviderMode.Chunk,
             supportsBackground = true,
             supportsPartialResults = false,
             supportsTimestamps = true,
-            status = "Configured in settings"
-        ),
-        SpeechProviderInfo(
-            id = "openai_realtime",
-            displayName = "OpenAI Realtime Transcription",
-            mode = SpeechProviderMode.Live,
-            supportsBackground = true,
-            supportsPartialResults = true,
-            supportsTimestamps = true,
-            status = "Service boundary ready"
+            status = "Transcribes recorded audio chunks"
         ),
         SpeechProviderInfo(
             id = "elevenlabs_stt",
@@ -39,8 +30,7 @@ object ProviderCatalog {
             supportsBackground = true,
             supportsPartialResults = false,
             supportsTimestamps = true,
-            status = "Optional provider boundary"
-        ),
-        MockSpeechProvider().info
+            status = "Transcribes recorded audio chunks"
+        )
     )
 }
