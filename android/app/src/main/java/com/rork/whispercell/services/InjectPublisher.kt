@@ -25,16 +25,15 @@ class InjectPublisher {
     fun endpoint(injectCode: String = ""): String {
         val cleanCode = sanitizeInjectCode(injectCode)
         return if (cleanCode.isBlank()) {
-            "https://11z.co/_w/{INJECT_CODE}/selection"
+            LEGACY_SELECTION_ENDPOINT
         } else {
             "https://11z.co/_w/$cleanCode/selection"
         }
     }
 
     fun publishUrl(injectCode: String, value: String): String {
-        val cleanCode = sanitizeInjectCode(injectCode)
         val encodedValue = URLEncoder.encode(value.trim(), "UTF-8")
-        return "${endpoint(cleanCode)}?value=$encodedValue"
+        return "${endpoint(injectCode)}?value=$encodedValue"
     }
 
     suspend fun publish(injectCode: String, value: String, retryOnce: Boolean = true): Result<String> {
@@ -42,11 +41,21 @@ class InjectPublisher {
         val cleanValue = value.trim()
         if (cleanCode.isBlank()) return Result.failure(IllegalArgumentException("Inject code is required"))
         if (cleanValue.isBlank()) return Result.failure(IllegalArgumentException("Value is required"))
+        return publishUrlWithRetry(publishUrl(cleanCode, cleanValue), retryOnce)
+    }
 
+    /** Backward-compatible preview path for existing ViewModel calls until the Inject Code UI is wired. */
+    suspend fun publish(value: String, retryOnce: Boolean): Result<String> {
+        val cleanValue = value.trim()
+        if (cleanValue.isBlank()) return Result.failure(IllegalArgumentException("Value is required"))
+        return publishUrlWithRetry(publishUrl("", cleanValue), retryOnce)
+    }
+
+    private suspend fun publishUrlWithRetry(url: String, retryOnce: Boolean): Result<String> {
         val attempts = if (retryOnce) 2 else 1
         var lastError: Throwable? = null
         repeat(attempts) {
-            val result = runCatching { getValueUrl(cleanCode, cleanValue) }
+            val result = runCatching { getValueUrl(url) }
             result.fold(
                 onSuccess = { return Result.success(it) },
                 onFailure = { lastError = it }
@@ -55,14 +64,15 @@ class InjectPublisher {
         return Result.failure(lastError ?: IllegalStateException("Inject publish failed"))
     }
 
-    suspend fun publish(value: String, retryOnce: Boolean): Result<String> =
-        Result.failure(IllegalArgumentException("Inject code is required. Use publish(injectCode, value, retryOnce)."))
-
-    private suspend fun getValueUrl(injectCode: String, value: String): String {
-        val response = client.get(publishUrl(injectCode, value)) {
+    private suspend fun getValueUrl(url: String): String {
+        val response = client.get(url) {
             accept(ContentType.Text.Plain)
         }
         if (!response.status.isSuccess()) error("Inject returned ${response.status.value}")
         return response.body<String>().ifBlank { "Published" }
+    }
+
+    private companion object {
+        const val LEGACY_SELECTION_ENDPOINT = "https://11z.co/_w/selection"
     }
 }
