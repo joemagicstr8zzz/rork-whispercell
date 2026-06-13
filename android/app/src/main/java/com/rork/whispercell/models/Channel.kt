@@ -8,8 +8,6 @@ data class Channel(
     val inputCategories: List<DetectedCategory>,
     val priority: List<DetectedCategory>,
     val payloadFormat: String,
-    val useDefaultInjectCode: Boolean,
-    val customInjectCode: String? = null,
     val autoPublish: Boolean,
     val confidenceThreshold: Float,
     val cooldownSeconds: Int,

@@ -9,7 +9,6 @@ data class PerformanceProfile(
     val speechProviderId: String,
     val activeCategories: List<DetectedCategory>,
     val activeChannelIds: List<String>,
-    val injectCode: String,
     val reviewModeEnabled: Boolean,
     val fullAutomationEnabled: Boolean,
     val startMode: StartMode,

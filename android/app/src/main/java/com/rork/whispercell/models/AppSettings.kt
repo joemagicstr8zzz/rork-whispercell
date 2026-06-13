@@ -25,7 +25,6 @@ data class AppSettings(
     val cleanTranscriptMode: Boolean = true,
     val verbatimTranscriptMode: Boolean = false,
     val injectEnabled: Boolean = true,
-    val defaultInjectCode: String = "",
     val injectTimeoutSeconds: Int = 8,
     val injectRetryOnce: Boolean = true,
     val reviewModeEnabled: Boolean = true,

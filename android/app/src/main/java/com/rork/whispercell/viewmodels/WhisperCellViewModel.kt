@@ -58,7 +58,7 @@ class WhisperCellViewModel : ViewModel() {
             channels = defaultChannels,
             speechProviders = ProviderCatalog.providers,
             activeChannels = defaultChannels.filter { it.id in defaultProfiles.first { profile -> profile.name == "Confabulation" }.activeChannelIds },
-            logs = listOf(logger.entry("WhisperCell is live in Mock Transcript Mode. Enter your Inject code before publishing."))
+            logs = listOf(logger.entry("WhisperCell is live in Mock Transcript Mode. Inject publishes to the fixed selection endpoint with a value field."))
         )
     )
     val uiState: StateFlow<PerformanceUiState> = _uiState.asStateFlow()
@@ -138,7 +138,7 @@ class WhisperCellViewModel : ViewModel() {
                 selectedMatch = null,
                 lastPublishedValue = "Nothing published yet.",
                 lastInjectUrl = "",
-                injectStatus = if (state.settings.defaultInjectCode.isBlank()) InjectStatus.NotConfigured else InjectStatus.Ready,
+                injectStatus = if (state.settings.injectEnabled) InjectStatus.Ready else InjectStatus.NotConfigured,
                 logs = listOf(logger.entry(privacyManager.clearSessionNotice(), LogLevel.Success)),
                 errorMessage = null
             )
@@ -275,40 +275,14 @@ class WhisperCellViewModel : ViewModel() {
             _uiState.update { it.copy(errorMessage = "Run extraction before publishing.") }
             return
         }
-        val injectCode: String = injectCodeFor(match?.channel, state)
-        if (state.settings.injectEnabled && injectCode.isBlank()) {
-            _uiState.update { current ->
-                current.copy(
-                    injectStatus = InjectStatus.NotConfigured,
-                    errorMessage = "Enter your Inject code first. WhisperCell no longer uses a hard-coded ID.",
-                    logs = prependLog(current.logs, logger.entry("Publish blocked: Inject code is blank.", LogLevel.Warning))
-                )
-            }
-            return
-        }
-        val url: String = if (injectCode.isNotBlank()) injectPublisher.buildUrl(injectCode, value) else "Local simulation only"
         _uiState.update { current ->
             current.copy(
                 sessionState = SessionState.Published,
-                injectStatus = if (injectCode.isNotBlank()) InjectStatus.Published else InjectStatus.Ready,
+                injectStatus = if (current.settings.injectEnabled) InjectStatus.Ready else InjectStatus.NotConfigured,
                 lastPublishedValue = value,
-                lastInjectUrl = url,
+                lastInjectUrl = injectPublisher.endpoint(),
                 notificationState = backgroundSessionService.notificationFor(SessionState.Published.label),
-                logs = prependLog(current.logs, logger.entry("Simulated Inject publish: $value", LogLevel.Success)),
-                errorMessage = null
-            )
-        }
-    }
-
-    fun updateInjectCode(input: String) {
-        val cleanCode: String = injectPublisher.sanitizeInjectCode(input)
-        _uiState.update { state ->
-            val url: String = if (cleanCode.isBlank()) "" else injectPublisher.buildUrl(cleanCode, state.selectedMatch?.payload ?: "WhisperCell Test")
-            state.copy(
-                settings = state.settings.copy(defaultInjectCode = cleanCode),
-                injectStatus = if (cleanCode.isBlank()) InjectStatus.NotConfigured else InjectStatus.Ready,
-                lastInjectUrl = url,
-                logs = prependLog(state.logs, logger.entry("Default Inject code updated (${cleanCode.length}/7 characters).")),
+                logs = prependLog(current.logs, logger.entry("Local Inject simulation only: $value", LogLevel.Success)),
                 errorMessage = null
             )
         }
@@ -318,31 +292,48 @@ class WhisperCellViewModel : ViewModel() {
         _uiState.update { state ->
             state.copy(
                 settings = state.settings.copy(injectEnabled = enabled),
-                injectStatus = if (!enabled) InjectStatus.NotConfigured else if (state.settings.defaultInjectCode.isBlank()) InjectStatus.NotConfigured else InjectStatus.Ready,
+                injectStatus = if (enabled) InjectStatus.Ready else InjectStatus.NotConfigured,
                 logs = prependLog(state.logs, logger.entry(if (enabled) "Inject publishing enabled." else "Inject publishing disabled; standalone tools remain available."))
             )
         }
     }
 
     fun testInject() {
-        val code: String = _uiState.value.settings.defaultInjectCode
-        if (code.isBlank()) {
+        viewModelScope.launch {
+            val value: String = "WhisperCell Test"
             _uiState.update { state ->
                 state.copy(
-                    injectStatus = InjectStatus.NotConfigured,
-                    errorMessage = "Enter your Inject code only, not the full URL.",
-                    logs = prependLog(state.logs, logger.entry("Inject test blocked: no code entered.", LogLevel.Warning))
+                    sessionState = SessionState.PublishingToInject,
+                    injectStatus = InjectStatus.Testing,
+                    lastInjectUrl = injectPublisher.endpoint(),
+                    logs = prependLog(state.logs, logger.entry("Testing Inject with POST field value=$value.")),
+                    errorMessage = null
                 )
             }
-            return
-        }
-        val url: String = injectPublisher.buildUrl(code, "WhisperCell Test")
-        _uiState.update { state ->
-            state.copy(
-                injectStatus = InjectStatus.Connected,
-                lastInjectUrl = url,
-                logs = prependLog(state.logs, logger.entry("Inject code validated locally: ${injectPublisher.sanitizeInjectCode(code)}", LogLevel.Success)),
-                errorMessage = null
+            val result: Result<String> = injectPublisher.publish(value = value, retryOnce = _uiState.value.settings.injectRetryOnce)
+            result.fold(
+                onSuccess = {
+                    _uiState.update { state ->
+                        state.copy(
+                            sessionState = SessionState.Published,
+                            injectStatus = InjectStatus.Connected,
+                            lastPublishedValue = value,
+                            notificationState = backgroundSessionService.notificationFor(SessionState.Published.label),
+                            logs = prependLog(state.logs, logger.entry("Inject test transmitted: $value", LogLevel.Success)),
+                            errorMessage = null
+                        )
+                    }
+                },
+                onFailure = { throwable ->
+                    _uiState.update { state ->
+                        state.copy(
+                            sessionState = SessionState.Error,
+                            injectStatus = InjectStatus.RetryAvailable,
+                            logs = prependLog(state.logs, logger.entry("Inject test failed: ${throwable.message ?: "Unknown error"}", LogLevel.Error)),
+                            errorMessage = "Inject test failed. WhisperCell posted to ${injectPublisher.endpoint()} with a value field; check network and Inject setup."
+                        )
+                    }
+                }
             )
         }
     }
@@ -362,20 +353,9 @@ class WhisperCellViewModel : ViewModel() {
                 }
                 return@launch
             }
-            val injectCode: String = injectCodeFor(match?.channel, state)
-            if (injectCode.isBlank()) {
-                _uiState.update { current ->
-                    current.copy(
-                        injectStatus = InjectStatus.NotConfigured,
-                        errorMessage = "Enter your Inject code before publishing.",
-                        logs = prependLog(current.logs, logger.entry("Real Inject publish blocked: no code entered.", LogLevel.Warning))
-                    )
-                }
-                return@launch
-            }
             setState(SessionState.PublishingToInject, "Publishing selected value to Inject.")
-            _uiState.update { it.copy(injectStatus = InjectStatus.Publishing, lastInjectUrl = injectPublisher.buildUrl(injectCode, value)) }
-            val result: Result<String> = injectPublisher.publish(injectCode, value)
+            _uiState.update { it.copy(injectStatus = InjectStatus.Publishing, lastInjectUrl = injectPublisher.endpoint()) }
+            val result: Result<String> = injectPublisher.publish(value = value, retryOnce = state.settings.injectRetryOnce)
             result.fold(
                 onSuccess = {
                     _uiState.update { current ->
@@ -395,7 +375,7 @@ class WhisperCellViewModel : ViewModel() {
                             sessionState = SessionState.Error,
                             injectStatus = InjectStatus.RetryAvailable,
                             logs = prependLog(current.logs, logger.entry("Inject publish failed: ${throwable.message ?: "Unknown error"}", LogLevel.Error)),
-                            errorMessage = "Inject publish failed. Check the code or connection; retry or use Simulate Inject in preview."
+                            errorMessage = "Inject publish failed. WhisperCell posts to ${injectPublisher.endpoint()} with a value field; check network/Inject availability or retry."
                         )
                     }
                 }
@@ -410,15 +390,6 @@ class WhisperCellViewModel : ViewModel() {
 
     fun toggleChannelAutoPublish(channelId: String, enabled: Boolean) {
         updateChannel(channelId, if (enabled) "Channel auto-publish enabled" else "Channel auto-publish disabled") { it.copy(autoPublish = enabled) }
-    }
-
-    fun toggleChannelUseDefaultInjectCode(channelId: String, enabled: Boolean) {
-        updateChannel(channelId, if (enabled) "Channel now uses default Inject code" else "Channel now uses custom Inject code") { it.copy(useDefaultInjectCode = enabled) }
-    }
-
-    fun updateChannelCustomInjectCode(channelId: String, input: String) {
-        val cleanCode: String = injectPublisher.sanitizeInjectCode(input)
-        updateChannel(channelId, "Channel Inject code updated") { it.copy(customInjectCode = cleanCode) }
     }
 
     fun updateChannelPayloadFormat(channelId: String, value: String) {
@@ -629,7 +600,7 @@ class WhisperCellViewModel : ViewModel() {
             )
         }
         if (publishAfterMatch && selected != null) {
-            simulateInjectPublish()
+            publishSelectedValue()
         } else {
             setState(SessionState.MatchingChannel, "Review Mode is on. Approve before publishing.")
         }
@@ -717,23 +688,18 @@ class WhisperCellViewModel : ViewModel() {
         }
     }
 
-    private fun injectCodeFor(channel: Channel?, state: PerformanceUiState): String {
-        val channelCode: String = if (channel != null && !channel.useDefaultInjectCode) channel.customInjectCode.orEmpty() else ""
-        return channelCode.ifBlank { state.activeProfile.injectCode.ifBlank { state.settings.defaultInjectCode } }
-    }
-
     private fun prependLog(logs: List<LogEntry>, entry: LogEntry): List<LogEntry> = (listOf(entry) + logs).take(100)
 
     private fun buildDefaultChannels(): List<Channel> = listOf(
-        Channel("word", "Word Channel", true, listOf(DetectedCategory.Word, DetectedCategory.Phrase), listOf(DetectedCategory.Word, DetectedCategory.Phrase), "{value}", true, null, false, 0.7f, 5, false, true),
-        Channel("card", "Card Channel", true, listOf(DetectedCategory.PlayingCard), listOf(DetectedCategory.PlayingCard), "{card}", true, null, false, 0.82f, 5, true, false),
-        Channel("date", "Date Channel", true, listOf(DetectedCategory.Date, DetectedCategory.Birthday), listOf(DetectedCategory.Date, DetectedCategory.Birthday), "{date}", true, null, false, 0.75f, 5, false, true),
-        Channel("music", "Music Channel", true, listOf(DetectedCategory.Song, DetectedCategory.Artist, DetectedCategory.Lyric), listOf(DetectedCategory.Song, DetectedCategory.Artist, DetectedCategory.Lyric), "{song}", true, null, false, 0.72f, 5, false, true),
-        Channel("serial", "Serial Number Channel", true, listOf(DetectedCategory.SerialNumber, DetectedCategory.Number), listOf(DetectedCategory.SerialNumber, DetectedCategory.Number), "{serial}", true, null, false, 0.8f, 5, true, false),
-        Channel("zodiac", "Zodiac Channel", true, listOf(DetectedCategory.Zodiac, DetectedCategory.Birthday), listOf(DetectedCategory.Zodiac, DetectedCategory.Birthday), "{zodiac}", true, null, false, 0.75f, 5, false, true),
-        Channel("name", "Name Channel", true, listOf(DetectedCategory.Name, DetectedCategory.Celebrity), listOf(DetectedCategory.Name, DetectedCategory.Celebrity), "{name}", true, null, false, 0.7f, 5, false, true),
-        Channel("object", "Object Channel", true, listOf(DetectedCategory.Object), listOf(DetectedCategory.Object), "{object}", true, null, false, 0.7f, 5, false, true),
-        Channel("confabulation", "Confabulation Channel", true, listOf(DetectedCategory.FullConfabulation, DetectedCategory.Place, DetectedCategory.Name, DetectedCategory.Date, DetectedCategory.Object, DetectedCategory.Song), listOf(DetectedCategory.FullConfabulation, DetectedCategory.Place, DetectedCategory.Celebrity, DetectedCategory.Name, DetectedCategory.Date), "{place} | {person} | {date}", true, null, false, 0.7f, 8, false, true)
+        Channel("word", "Word Channel", true, listOf(DetectedCategory.Word, DetectedCategory.Phrase), listOf(DetectedCategory.Word, DetectedCategory.Phrase), "{value}", false, 0.7f, 5, false, true),
+        Channel("card", "Card Channel", true, listOf(DetectedCategory.PlayingCard), listOf(DetectedCategory.PlayingCard), "{card}", false, 0.82f, 5, true, false),
+        Channel("date", "Date Channel", true, listOf(DetectedCategory.Date, DetectedCategory.Birthday), listOf(DetectedCategory.Date, DetectedCategory.Birthday), "{date}", false, 0.75f, 5, false, true),
+        Channel("music", "Music Channel", true, listOf(DetectedCategory.Song, DetectedCategory.Artist, DetectedCategory.Lyric), listOf(DetectedCategory.Song, DetectedCategory.Artist, DetectedCategory.Lyric), "{song}", false, 0.72f, 5, false, true),
+        Channel("serial", "Serial Number Channel", true, listOf(DetectedCategory.SerialNumber, DetectedCategory.Number), listOf(DetectedCategory.SerialNumber, DetectedCategory.Number), "{serial}", false, 0.8f, 5, true, false),
+        Channel("zodiac", "Zodiac Channel", true, listOf(DetectedCategory.Zodiac, DetectedCategory.Birthday), listOf(DetectedCategory.Zodiac, DetectedCategory.Birthday), "{zodiac}", false, 0.75f, 5, false, true),
+        Channel("name", "Name Channel", true, listOf(DetectedCategory.Name, DetectedCategory.Celebrity), listOf(DetectedCategory.Name, DetectedCategory.Celebrity), "{name}", false, 0.7f, 5, false, true),
+        Channel("object", "Object Channel", true, listOf(DetectedCategory.Object), listOf(DetectedCategory.Object), "{object}", false, 0.7f, 5, false, true),
+        Channel("confabulation", "Confabulation Channel", true, listOf(DetectedCategory.FullConfabulation, DetectedCategory.Place, DetectedCategory.Name, DetectedCategory.Date, DetectedCategory.Object, DetectedCategory.Song), listOf(DetectedCategory.FullConfabulation, DetectedCategory.Place, DetectedCategory.Celebrity, DetectedCategory.Name, DetectedCategory.Date), "{place} | {person} | {date}", false, 0.7f, 8, false, true)
     )
 
     private fun buildDefaultProfiles(channels: List<Channel>): List<PerformanceProfile> {
@@ -745,7 +711,6 @@ class WhisperCellViewModel : ViewModel() {
             speechProviderId = "mock",
             activeCategories = categories,
             activeChannelIds = listOf(channelId),
-            injectCode = "",
             reviewModeEnabled = true,
             fullAutomationEnabled = false,
             startMode = StartMode.StartPhraseRequired,

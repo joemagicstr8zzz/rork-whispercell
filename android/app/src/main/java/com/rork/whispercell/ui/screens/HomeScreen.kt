@@ -317,7 +317,7 @@ private fun PerformanceScreen(
                 InfoRow("Stop Phrase", state.activeProfile.stopPhrase)
                 InfoRow("Active channels", state.activeChannels.joinToString { it.name }.ifBlank { "No active channels" })
                 InfoRow("Inject status", state.injectStatus.label)
-                InfoRow("Inject code", state.settings.defaultInjectCode.ifBlank { "Not configured" })
+                InfoRow("Inject endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" })
                 InfoRow("Notification", state.notificationState)
             }
         }
@@ -467,7 +467,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
             SectionCard(title = "Publish review", icon = Icons.Filled.Publish) {
                 InfoRow("Selected channel", state.selectedMatch?.channel?.name ?: "No channel selected")
                 InfoRow("Payload", state.selectedMatch?.payload ?: "Nothing ready")
-                InfoRow("Generated Inject URL", state.lastInjectUrl.ifBlank { "Generated after publish/test" })
+                InfoRow("Inject endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" })
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     PrimaryControlButton("Publish to Inject", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
@@ -510,7 +510,7 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
                 SettingsToggleRow("Review Mode", state.activeProfile.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
                 SettingsToggleRow("Full Automation", state.activeProfile.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
                 InfoRow("Speech engine", state.activeProfile.speechProviderId)
-                InfoRow("Inject code", state.settings.defaultInjectCode.ifBlank { "Uses editable default Inject code" })
+                InfoRow("Inject output", "Fixed endpoint; payload is sent as the value field")
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Active channels for this profile", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 state.channels.forEach { channel ->
@@ -542,7 +542,7 @@ private fun ChannelsScreen(state: PerformanceUiState, viewModel: WhisperCellView
     ) {
         item {
             SectionCard(title = "Channel matching", icon = Icons.Filled.Route) {
-                Text("These controls are now live. Enable channels, change payload templates, pick default or custom Inject codes, test routing, and rerun extraction without leaving preview.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("These controls are live. Enable channels, change payload templates, test routing, and rerun extraction without leaving preview. Inject publishes selected payloads to a fixed endpoint as the value field.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 InfoRow("Active profile", state.activeProfile.name)
                 InfoRow("Selected payload", state.selectedMatch?.payload ?: "Run a channel test or extraction")
             }
@@ -562,32 +562,29 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
         item {
             SectionCard(title = "Inject setup", icon = Icons.Filled.Hub) {
                 SettingsToggleRow("Enable Inject", state.settings.injectEnabled, viewModel::toggleInjectEnabled)
-                OutlinedTextField(
-                    value = state.settings.defaultInjectCode,
-                    onValueChange = viewModel::updateInjectCode,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Inject Code") },
-                    supportingText = { Text("Enter your Inject code only. Max 7 letters or numbers. Do not paste the full URL.") },
-                    singleLine = true
-                )
                 InfoRow("Status", state.injectStatus.label)
-                InfoRow("Generated URL", state.lastInjectUrl.ifBlank { "https://11z.co/_w/{INJECT_CODE}/selection?value={ENCODED_VALUE}" })
+                InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" })
+                InfoRow("Payload field", "value")
+                Text(
+                    "WhisperCell never appends a value or ID to the URL. It posts the selected payload as the value field.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     PrimaryControlButton("Test Inject", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::testInject)
-                    SecondaryControlButton("Copy URL", Icons.Filled.ContentCopy, Modifier.weight(1f)) {
-                        clipboard.setText(AnnotatedString(state.lastInjectUrl))
+                    SecondaryControlButton("Copy endpoint", Icons.Filled.ContentCopy, Modifier.weight(1f)) {
+                        clipboard.setText(AnnotatedString(state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" }))
                     }
                 }
             }
         }
         item {
             SectionCard(title = "Publish behavior", icon = Icons.Filled.Publish) {
-                InfoRow("Send method", "GET with value parameter")
+                InfoRow("Send method", "POST field: value")
                 InfoRow("Timeout", "${state.settings.injectTimeoutSeconds} seconds")
                 InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once on failure" else "No retry")
                 InfoRow("Last sent value", state.lastPublishedValue)
-                InfoRow("Channel codes", "Default code or custom per channel")
+                InfoRow("URL behavior", "No query string. No path ID. Fixed Inject endpoint only.")
                 Spacer(modifier = Modifier.height(8.dp))
                 PrimaryControlButton("Publish selected value to Inject", Icons.Filled.Publish, Modifier.fillMaxWidth(), viewModel::publishSelectedValue)
             }
@@ -773,7 +770,7 @@ private fun HelpScreen() {
                     "Set your start phrase.",
                     "Set your stop phrase.",
                     "Choose which channels are active.",
-                    "Confirm your Inject code.",
+                    "Confirm Inject is enabled.",
                     "Start Background Session.",
                     "Perform normally.",
                     "Say your start phrase when you want WhisperCell to begin active capture.",
@@ -939,16 +936,7 @@ private fun ChannelCard(channel: Channel, viewModel: WhisperCellViewModel) {
             label = { Text("Payload format") },
             singleLine = true
         )
-        SettingsToggleRow("Use default Inject code", channel.useDefaultInjectCode) { enabled -> viewModel.toggleChannelUseDefaultInjectCode(channel.id, enabled) }
-        if (!channel.useDefaultInjectCode) {
-            OutlinedTextField(
-                value = channel.customInjectCode.orEmpty(),
-                onValueChange = { value -> viewModel.updateChannelCustomInjectCode(channel.id, value) },
-                modifier = Modifier.fillMaxWidth(),
-                label = { Text("Custom Inject code") },
-                singleLine = true
-            )
-        }
+        InfoRow("Inject publish", "Posts this channel payload as the value field")
         SettingsToggleRow("Auto-publish", channel.autoPublish) { enabled -> viewModel.toggleChannelAutoPublish(channel.id, enabled) }
         InfoRow("Confidence threshold", "${(channel.confidenceThreshold * 100).toInt()}%")
         InfoRow("Cooldown", "${channel.cooldownSeconds} seconds")
