@@ -4,7 +4,6 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.engine.android.Android
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.accept
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -32,7 +31,7 @@ class InjectPublisher {
 
     fun publishUrl(injectCode: String, value: String): String = endpoint(injectCode)
 
-    suspend fun publish(injectCode: String, value: String, retryOnce: Boolean = true): Result<String> {
+    suspend fun publish(injectCode: String, value: String, retryOnce: Boolean = false): Result<String> {
         val cleanCode = sanitizeInjectCode(injectCode)
         val cleanValue = value.trim()
         if (cleanCode.isBlank()) return Result.failure(IllegalArgumentException("Code is required"))
@@ -47,7 +46,7 @@ class InjectPublisher {
         val cleanCode = sanitizeInjectCode(injectCode)
         if (cleanCode.isBlank()) return Result.failure(IllegalArgumentException("Code is required"))
         return runCatching {
-            val response = client.get(endpoint(cleanCode)) { accept(ContentType.Text.Plain) }
+            val response = client.get(endpoint(cleanCode))
             if (!response.status.isSuccess()) error("Endpoint returned ${response.status.value}")
             response.body<String>()
         }
@@ -72,7 +71,6 @@ class InjectPublisher {
         }.toString()
 
         val response = client.post(endpoint) {
-            accept(ContentType.Text.Plain)
             contentType(ContentType.Application.Json)
             setBody(body)
         }
