@@ -69,6 +69,18 @@ class WhisperCellViewModel : ViewModel() {
         mockSpeechProvider.onError { error -> setState(SessionState.Error, error.message, LogLevel.Error) }
     }
 
+    fun reportPermissionBlocked(missingPermissions: String) {
+        _uiState.update { state ->
+            state.copy(
+                sessionState = SessionState.Idle,
+                isListeningVisible = false,
+                notificationState = "Permissions required",
+                logs = prependLog(state.logs, logger.entry("Listening session blocked until permissions are granted: $missingPermissions.", LogLevel.Warning)),
+                errorMessage = "Grant $missingPermissions permission before starting a live/background listening session. Mock Transcript Mode still works."
+            )
+        }
+    }
+
     fun startBackgroundSession() {
         viewModelScope.launch {
             val state: PerformanceUiState = _uiState.value

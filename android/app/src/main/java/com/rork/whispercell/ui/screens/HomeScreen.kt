@@ -1,5 +1,11 @@
 package com.rork.whispercell.ui.screens
 
+import android.Manifest
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -68,10 +74,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -84,6 +92,7 @@ import com.rork.whispercell.models.PerformanceProfile
 import com.rork.whispercell.models.PerformanceUiState
 import com.rork.whispercell.models.SessionState
 import com.rork.whispercell.models.SpeechProviderInfo
+import com.rork.whispercell.services.WhisperCellForegroundService
 import com.rork.whispercell.viewmodels.WhisperCellViewModel
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
@@ -97,6 +106,44 @@ private enum class MainTab(val label: String, val icon: ImageVector) {
     Help("Help", Icons.Filled.Help)
 }
 
+private data class PermissionUiState(
+    val hasRecordAudio: Boolean,
+    val hasPostNotifications: Boolean,
+    val hasMicrophoneHardware: Boolean,
+    val missingLabels: List<String>
+) {
+    val hasRequiredRuntimePermissions: Boolean = hasRecordAudio && hasPostNotifications
+}
+
+private fun buildPermissionUiState(context: Context): PermissionUiState {
+    val hasRecordAudio: Boolean = ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    val hasPostNotifications: Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    val hasMicrophoneHardware: Boolean = context.packageManager.hasSystemFeature(PackageManager.FEATURE_MICROPHONE)
+    val missingLabels: List<String> = buildList {
+        if (!hasRecordAudio) add("Microphone")
+        if (!hasPostNotifications) add("Notifications")
+    }
+    return PermissionUiState(
+        hasRecordAudio = hasRecordAudio,
+        hasPostNotifications = hasPostNotifications,
+        hasMicrophoneHardware = hasMicrophoneHardware,
+        missingLabels = missingLabels
+    )
+}
+
+private fun requiredRuntimePermissions(): Array<String> = buildList {
+    add(Manifest.permission.RECORD_AUDIO)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) add(Manifest.permission.POST_NOTIFICATIONS)
+}.toTypedArray()
+
+private fun startPerformanceForegroundService(context: Context, stateLabel: String) {
+    ContextCompat.startForegroundService(context, WhisperCellForegroundService.intent(context, stateLabel))
+}
+
+private fun stopPerformanceForegroundService(context: Context) {
+    context.stopService(WhisperCellForegroundService.intent(context, "Stopping"))
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -105,6 +152,54 @@ fun HomeScreen(
 ) {
     val state: PerformanceUiState by viewModel.uiState.collectAsStateWithLifecycle()
     var selectedTab: MainTab by remember { mutableStateOf(MainTab.Performance) }
+    val context: Context = LocalContext.current
+    var permissionStatus: PermissionUiState by remember { mutableStateOf(buildPermissionUiState(context)) }
+    var pendingStartAfterPermission: Boolean by remember { mutableStateOf(false) }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) {
+        val refreshedStatus: PermissionUiState = buildPermissionUiState(context)
+        permissionStatus = refreshedStatus
+        if (pendingStartAfterPermission && refreshedStatus.hasRequiredRuntimePermissions) {
+            pendingStartAfterPermission = false
+            startPerformanceForegroundService(context, "Waiting for start phrase")
+            viewModel.startBackgroundSession()
+        } else if (pendingStartAfterPermission) {
+            pendingStartAfterPermission = false
+            viewModel.reportPermissionBlocked(refreshedStatus.missingLabels.joinToString().ifBlank { "required listening permissions" })
+        }
+    }
+    val requestPermissions: () -> Unit = {
+        permissionLauncher.launch(requiredRuntimePermissions())
+    }
+    val startBackgroundSession: () -> Unit = {
+        val refreshedStatus: PermissionUiState = buildPermissionUiState(context)
+        permissionStatus = refreshedStatus
+        if (refreshedStatus.hasRequiredRuntimePermissions) {
+            startPerformanceForegroundService(context, "Waiting for start phrase")
+            viewModel.startBackgroundSession()
+        } else {
+            pendingStartAfterPermission = true
+            viewModel.reportPermissionBlocked(refreshedStatus.missingLabels.joinToString().ifBlank { "required listening permissions" })
+            requestPermissions()
+        }
+    }
+    val stopSession: () -> Unit = {
+        stopPerformanceForegroundService(context)
+        viewModel.stopSession()
+    }
+    val panicStop: () -> Unit = {
+        stopPerformanceForegroundService(context)
+        viewModel.panicStop()
+    }
+    val pauseListening: () -> Unit = {
+        startPerformanceForegroundService(context, "Listening paused")
+        viewModel.pauseListening()
+    }
+    val resumeListening: () -> Unit = {
+        startPerformanceForegroundService(context, "Waiting for start phrase")
+        viewModel.resumeListening()
+    }
 
     Scaffold(
         topBar = {
@@ -153,13 +248,23 @@ fun HomeScreen(
                 .padding(innerPadding)
         ) {
             when (selectedTab) {
-                MainTab.Performance -> PerformanceScreen(state, viewModel)
+                MainTab.Performance -> PerformanceScreen(
+                    state = state,
+                    viewModel = viewModel,
+                    permissionStatus = permissionStatus,
+                    onStartBackgroundSession = startBackgroundSession,
+                    onStopSession = stopSession,
+                    onPanicStop = panicStop,
+                    onPauseListening = pauseListening,
+                    onResumeListening = resumeListening,
+                    onRequestPermissions = requestPermissions
+                )
                 MainTab.Review -> ReviewScreen(state, viewModel)
                 MainTab.Profiles -> ProfilesScreen(state, viewModel)
                 MainTab.Channels -> ChannelsScreen(state, viewModel)
                 MainTab.Inject -> InjectScreen(state, viewModel)
                 MainTab.Logs -> LogsScreen(state)
-                MainTab.Settings -> SettingsScreen(state, viewModel)
+                MainTab.Settings -> SettingsScreen(state, viewModel, permissionStatus, requestPermissions)
                 MainTab.Help -> HelpScreen()
             }
         }
@@ -167,24 +272,35 @@ fun HomeScreen(
 }
 
 @Composable
-private fun PerformanceScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
+private fun PerformanceScreen(
+    state: PerformanceUiState,
+    viewModel: WhisperCellViewModel,
+    permissionStatus: PermissionUiState,
+    onStartBackgroundSession: () -> Unit,
+    onStopSession: () -> Unit,
+    onPanicStop: () -> Unit,
+    onPauseListening: () -> Unit,
+    onResumeListening: () -> Unit,
+    onRequestPermissions: () -> Unit
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item { SessionHero(state = state) }
+        item { PermissionReadinessCard(status = permissionStatus, onRequestPermissions = onRequestPermissions) }
         item {
             SectionCard(title = "Hands-free controls", icon = Icons.Filled.RadioButtonChecked) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Start Background Session", Icons.Filled.PlayArrow, Modifier.weight(1f), viewModel::startBackgroundSession)
-                    DangerControlButton("Panic Stop", Icons.Filled.Emergency, Modifier.weight(1f), viewModel::panicStop)
+                    PrimaryControlButton("Start Background Session", Icons.Filled.PlayArrow, Modifier.weight(1f), onStartBackgroundSession)
+                    DangerControlButton("Panic Stop", Icons.Filled.Emergency, Modifier.weight(1f), onPanicStop)
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    SecondaryControlButton("Pause", Icons.Filled.Pause, Modifier.weight(1f), viewModel::pauseListening)
-                    SecondaryControlButton("Resume", Icons.Filled.PlayArrow, Modifier.weight(1f), viewModel::resumeListening)
-                    SecondaryControlButton("Stop", Icons.Filled.Stop, Modifier.weight(1f), viewModel::stopSession)
+                    SecondaryControlButton("Pause", Icons.Filled.Pause, Modifier.weight(1f), onPauseListening)
+                    SecondaryControlButton("Resume", Icons.Filled.PlayArrow, Modifier.weight(1f), onResumeListening)
+                    SecondaryControlButton("Stop", Icons.Filled.Stop, Modifier.weight(1f), onStopSession)
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedButton(onClick = viewModel::clearSession, modifier = Modifier.fillMaxWidth()) {
@@ -263,6 +379,27 @@ private fun SessionHero(state: PerformanceUiState) {
                 StatusChip("Silence ignored")
                 StatusChip(state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Mock STT ready")
             }
+        }
+    }
+}
+
+@Composable
+private fun PermissionReadinessCard(status: PermissionUiState, onRequestPermissions: () -> Unit) {
+    SectionCard(title = "Permissions & background readiness", icon = Icons.Filled.Mic) {
+        InfoRow("Microphone permission", if (status.hasRecordAudio) "Granted" else "Required for live transcription and start/stop phrase listening")
+        InfoRow("Notification permission", if (status.hasPostNotifications) "Granted" else "Required for persistent background-session status")
+        InfoRow("Microphone hardware", if (status.hasMicrophoneHardware) "Detected" else "Not detected in this environment; Mock Transcript Mode remains available")
+        Text(
+            text = if (status.hasRequiredRuntimePermissions) {
+                "Ready for live/background listening handoff. Preview still uses Mock Transcript Mode unless a native speech provider is completed."
+            } else {
+                "WhisperCell will ask before starting a listening session. Review, mock extraction, channels, and Inject testing still work without microphone permission."
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (!status.hasRequiredRuntimePermissions) {
+            Spacer(modifier = Modifier.height(10.dp))
+            PrimaryControlButton("Grant listening permissions", Icons.Filled.Mic, Modifier.fillMaxWidth(), onRequestPermissions)
         }
     }
 }
@@ -482,12 +619,18 @@ private fun LogsScreen(state: PerformanceUiState) {
 }
 
 @Composable
-private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
+private fun SettingsScreen(
+    state: PerformanceUiState,
+    viewModel: WhisperCellViewModel,
+    permissionStatus: PermissionUiState,
+    onRequestPermissions: () -> Unit
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item { PermissionSettingsCard(status = permissionStatus, onRequestPermissions = onRequestPermissions) }
         item {
             SectionCard(title = "Start and stop phrases", icon = Icons.Filled.Tune) {
                 SettingsToggleRow("Start Phrase enabled", state.settings.startPhraseEnabled, viewModel::toggleStartPhraseEnabled)
@@ -589,6 +732,21 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
                 InfoRow("Transcript Save", state.settings.transcriptSavePolicy)
                 SettingsToggleRow("Continue listening after publish", state.settings.continueListeningAfterPublish, viewModel::toggleContinueListening)
             }
+        }
+    }
+}
+
+@Composable
+private fun PermissionSettingsCard(status: PermissionUiState, onRequestPermissions: () -> Unit) {
+    SectionCard(title = "Permissions", icon = Icons.Filled.RadioButtonChecked) {
+        InfoRow("Microphone", if (status.hasRecordAudio) "Granted" else "Not granted")
+        InfoRow("Notifications", if (status.hasPostNotifications) "Granted" else "Not granted")
+        InfoRow("Foreground service", "Declared for microphone background sessions")
+        InfoRow("Network", "Internet permission declared for Inject and AI providers")
+        InfoRow("Wake lock", "Declared for persistent performance sessions")
+        if (!status.hasRequiredRuntimePermissions) {
+            Spacer(modifier = Modifier.height(10.dp))
+            PrimaryControlButton("Request Permissions", Icons.Filled.Mic, Modifier.fillMaxWidth(), onRequestPermissions)
         }
     }
 }
