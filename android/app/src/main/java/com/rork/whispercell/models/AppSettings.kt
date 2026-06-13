@@ -3,9 +3,9 @@ package com.rork.whispercell.models
 /** Global performer settings. Provider keys are held in memory only in this preview build. */
 data class AppSettings(
     val startPhraseEnabled: Boolean = true,
-    val startPhrases: List<String> = listOf("Picture this clearly for me"),
+    val startPhrases: List<String> = listOf("open"),
     val stopPhraseEnabled: Boolean = true,
-    val stopPhrases: List<String> = listOf("Perfect"),
+    val stopPhrases: List<String> = listOf("close"),
     val removeStartAndStopPhrases: Boolean = true,
     val silenceBehavior: SilenceBehavior = SilenceBehavior.Ignore,
     val maximumCaptureSeconds: Int = 90,
