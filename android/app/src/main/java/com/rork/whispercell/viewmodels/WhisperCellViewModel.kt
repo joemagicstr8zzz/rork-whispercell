@@ -1,6 +1,7 @@
 package com.rork.whispercell.viewmodels
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.rork.whispercell.models.AppSettings
 import com.rork.whispercell.models.Channel
@@ -19,6 +20,7 @@ import com.rork.whispercell.models.SpeechSessionConfig
 import com.rork.whispercell.models.StartMode
 import com.rork.whispercell.models.StopMode
 import com.rork.whispercell.services.AIExtractionService
+import com.rork.whispercell.services.AndroidSpeechProvider
 import com.rork.whispercell.services.BackgroundSessionService
 import com.rork.whispercell.services.ChannelMatcher
 import com.rork.whispercell.services.InjectPublisher
@@ -26,6 +28,7 @@ import com.rork.whispercell.services.MockSpeechProvider
 import com.rork.whispercell.services.PrivacyManager
 import com.rork.whispercell.services.ProviderCatalog
 import com.rork.whispercell.services.SessionLogger
+import com.rork.whispercell.services.SpeechProvider
 import com.rork.whispercell.services.StartPhraseDetector
 import com.rork.whispercell.services.StopPhraseDetector
 import com.rork.whispercell.services.TranscriptBrainService
@@ -37,7 +40,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-class WhisperCellViewModel : ViewModel() {
+class WhisperCellViewModel(application: Application) : AndroidViewModel(application) {
     private val logger = SessionLogger()
     private val backgroundSessionService = BackgroundSessionService()
     private val privacyManager = PrivacyManager()
@@ -47,6 +50,7 @@ class WhisperCellViewModel : ViewModel() {
     private val extractionService = AIExtractionService()
     private val channelMatcher = ChannelMatcher()
     private val transcriptBrainService = TranscriptBrainService()
+    private val androidSpeechProvider = AndroidSpeechProvider(application.applicationContext)
     private val injectPublisher = InjectPublisher()
     private val mockSpeechProvider = MockSpeechProvider()
     private var hasPublishedThisCapture: Boolean = false
@@ -61,15 +65,20 @@ class WhisperCellViewModel : ViewModel() {
             channels = defaultChannels,
             speechProviders = ProviderCatalog.providers,
             activeChannels = defaultChannels.filter { it.id in defaultProfiles.first { profile -> profile.name == "Confabulation" }.activeChannelIds },
-            logs = listOf(logger.entry("WhisperCell ready. Transcript Brain will analyze each finished capture."))
+            logs = listOf(logger.entry("WhisperCell ready. Android speech provider is the default live microphone source."))
         )
     )
     val uiState: StateFlow<PerformanceUiState> = _uiState.asStateFlow()
 
     init {
-        mockSpeechProvider.onPartialTranscript { text -> handlePartialTranscript(text) }
-        mockSpeechProvider.onFinalTranscript { text -> handleFinalTranscript(text) }
-        mockSpeechProvider.onError { error -> setState(SessionState.Error, error.message, LogLevel.Error) }
+        registerSpeechCallbacks(mockSpeechProvider)
+        registerSpeechCallbacks(androidSpeechProvider)
+    }
+
+    private fun registerSpeechCallbacks(provider: SpeechProvider) {
+        provider.onPartialTranscript { text -> handlePartialTranscript(text) }
+        provider.onFinalTranscript { text -> handleFinalTranscript(text) }
+        provider.onError { error -> setState(SessionState.Error, error.message, LogLevel.Error) }
     }
 
     fun reportPermissionBlocked(missingPermissions: String) {
@@ -78,8 +87,8 @@ class WhisperCellViewModel : ViewModel() {
                 sessionState = SessionState.Idle,
                 isListeningVisible = false,
                 notificationState = "Permissions required",
-                logs = prependLog(state.logs, logger.entry("Listening session blocked until permissions are granted: $missingPermissions.", LogLevel.Warning)),
-                errorMessage = "Grant $missingPermissions before starting a live session. Mock Transcript Mode still works."
+                logs = prependLog(state.logs, logger.entry("Live session blocked until permissions are granted: $missingPermissions.", LogLevel.Warning)),
+                errorMessage = "Grant $missingPermissions before starting a live session."
             )
         }
     }
@@ -87,30 +96,32 @@ class WhisperCellViewModel : ViewModel() {
     fun startBackgroundSession() {
         viewModelScope.launch {
             val state = _uiState.value
+            val provider = speechProviderFor(state)
             hasPublishedThisCapture = false
-            mockSpeechProvider.startSession(configFrom(state))
+            provider.startSession(configFrom(state))
             transcriptBuffer.clear()
             _uiState.update { current ->
                 current.copy(
-                    providerActivity = providerReadinessMessage(current),
+                    providerActivity = "${provider.info.displayName} active. Waiting for Start Phrase: ${primaryStartPhrase(current)}",
                     aiActivity = "Waiting for captured speech before extraction.",
                     rawCapturedTranscript = "",
                     transcriptBrain = null,
-                    transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Session started. Waiting for Start Phrase: ${primaryStartPhrase(current)}")
+                    transcriptEvents = prependTranscriptEvent(current.transcriptEvents, "Live session started with ${provider.info.displayName}. Waiting for Start Phrase: ${primaryStartPhrase(current)}")
                 )
             }
-            setState(SessionState.BackgroundReady, "Background session started. Preview uses Mock Transcript Mode; native listener can replace it later.")
+            setState(SessionState.BackgroundReady, "Live microphone session started using ${provider.info.displayName}.")
             delay(250)
             val next = if (state.settings.startPhraseEnabled) SessionState.WaitingForStartPhrase else SessionState.Capturing
             setState(next, if (next == SessionState.Capturing) "Capturing immediately. Start Phrase is off." else "Listening for Start Phrase: ${primaryStartPhrase(state)}")
         }
     }
 
-    fun stopSession() { viewModelScope.launch { mockSpeechProvider.stopSession(); setState(SessionState.Idle, "Session stopped manually.") } }
-    fun pauseListening() { viewModelScope.launch { mockSpeechProvider.pauseSession(); setState(SessionState.Paused, "Listening paused.") } }
-    fun resumeListening() { viewModelScope.launch { mockSpeechProvider.resumeSession(); setState(SessionState.WaitingForStartPhrase, "Listening resumed. Waiting for Start Phrase.") } }
+    fun stopSession() { viewModelScope.launch { speechProviderFor(_uiState.value).stopSession(); setState(SessionState.Idle, "Session stopped manually.") } }
+    fun pauseListening() { viewModelScope.launch { speechProviderFor(_uiState.value).pauseSession(); setState(SessionState.Paused, "Listening paused.") } }
+    fun resumeListening() { viewModelScope.launch { speechProviderFor(_uiState.value).resumeSession(); setState(SessionState.WaitingForStartPhrase, "Listening resumed. Waiting for Start Phrase.") } }
 
     fun panicStop() {
+        viewModelScope.launch { speechProviderFor(_uiState.value).stopSession() }
         transcriptBuffer.clear()
         _uiState.update { state ->
             state.copy(sessionState = SessionState.PanicStopped, isListeningVisible = false, notificationState = "Stopped", providerActivity = "Panic stop active. No capture is running.", logs = prependLog(state.logs, logger.entry("Immediate stop pressed. Listening and processing halted.", LogLevel.Warning)), errorMessage = null)
@@ -431,7 +442,16 @@ class WhisperCellViewModel : ViewModel() {
     private fun primaryStartPhrase(state: PerformanceUiState): String = state.settings.startPhrases.firstOrNull().orEmpty().ifBlank { "Picture this clearly for me" }
     private fun primaryStopPhrase(state: PerformanceUiState): String = state.settings.stopPhrases.firstOrNull().orEmpty().ifBlank { "Perfect" }
     private fun extractionModel(state: PerformanceUiState): String = if (state.settings.openAiModel.contains("transcribe", true) || state.settings.openAiModel.isBlank()) "gpt-4o-mini" else state.settings.openAiModel
-    private fun providerReadinessMessage(state: PerformanceUiState): String = state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName?.let { "$it selected." } ?: "Mock Transcript Mode ready."
+    private fun speechProviderFor(state: PerformanceUiState): SpeechProvider = when (state.settings.selectedSpeechProviderId) {
+        "android_builtin" -> androidSpeechProvider
+        "mock" -> mockSpeechProvider
+        else -> mockSpeechProvider
+    }
+    private fun providerReadinessMessage(state: PerformanceUiState): String = when (state.settings.selectedSpeechProviderId) {
+        "android_builtin" -> "Android Built-In selected. Press Start Background Session and speak clearly."
+        "mock" -> "Mock Transcript Mode selected. Use developer/demo routines only."
+        else -> "${state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Provider"} is configured as a boundary, but live capture is not wired yet."
+    }
     private fun previewValue(state: PerformanceUiState): String = state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: state.lastPublishedValue.takeUnless { it == "Nothing published yet." } ?: "WhisperCell Test"
     private fun endpointForState(state: PerformanceUiState): String = state.settings.selectionCode.takeIf { it.isNotBlank() }?.let { injectPublisher.publishUrl(it, previewValue(state)) }.orEmpty()
     private fun trimForLog(value: String, max: Int = 220): String = value.replace(Regex("\\s+"), " ").trim().let { if (it.length <= max) it else it.take(max) + "…" }
