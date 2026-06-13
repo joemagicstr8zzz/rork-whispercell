@@ -14,6 +14,7 @@ data class PerformanceUiState(
     val lastTranscriptLine: String = "No transcript yet.",
     val transcriptEvents: List<String> = emptyList(),
     val extractedData: ExtractedPerformanceData? = null,
+    val transcriptBrain: TranscriptBrainResult? = null,
     val selectedMatch: ChannelMatch? = null,
     val lastPublishedValue: String = "Nothing published yet.",
     val lastInjectUrl: String = "",
