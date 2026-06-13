@@ -58,7 +58,7 @@ class WhisperCellViewModel : ViewModel() {
             channels = defaultChannels,
             speechProviders = ProviderCatalog.providers,
             activeChannels = defaultChannels.filter { it.id in defaultProfiles.first { profile -> profile.name == "Confabulation" }.activeChannelIds },
-            logs = listOf(logger.entry("WhisperCell ready. Enter your selection code before publishing."))
+            logs = listOf(logger.entry("WhisperCell ready. Enter your Inject Code before publishing."))
         )
     )
     val uiState: StateFlow<PerformanceUiState> = _uiState.asStateFlow()
@@ -179,7 +179,7 @@ class WhisperCellViewModel : ViewModel() {
     fun updateSelectionCode(value: String) {
         val clean = injectPublisher.sanitizeInjectCode(value)
         _uiState.update { state ->
-            state.copy(settings = state.settings.copy(selectionCode = clean), lastInjectUrl = if (clean.isBlank()) "" else injectPublisher.publishUrl(clean, previewValue(state)), logs = prependLog(state.logs, logger.entry("Selection code updated (${clean.length}/7).")), errorMessage = null)
+            state.copy(settings = state.settings.copy(selectionCode = clean), lastInjectUrl = if (clean.isBlank()) "" else injectPublisher.publishUrl(clean, previewValue(state)), logs = prependLog(state.logs, logger.entry("Inject Code updated (${clean.length}/7).")), errorMessage = null)
         }
     }
 
@@ -207,9 +207,9 @@ class WhisperCellViewModel : ViewModel() {
         val value = state.selectedMatch?.payload ?: state.extractedData?.bestMatches?.fullConfabulation ?: state.extractedData?.detectedItems?.firstOrNull()?.normalizedValue.orEmpty()
         if (value.isBlank()) { _uiState.update { it.copy(errorMessage = "Run extraction before publishing.") }; return }
         val code = state.settings.selectionCode
-        val url = if (code.isBlank()) "Selection code required" else injectPublisher.publishUrl(code, value)
+        val url = if (code.isBlank()) "Inject Code required" else injectPublisher.publishUrl(code, value)
         _uiState.update { current ->
-            current.copy(sessionState = SessionState.Published, injectStatus = if (code.isBlank()) InjectStatus.RetryAvailable else InjectStatus.Published, lastPublishedValue = value, lastInjectUrl = url, notificationState = backgroundSessionService.notificationFor(SessionState.Published.label), logs = prependLog(current.logs, logger.entry("Local publish simulation: $url", if (code.isBlank()) LogLevel.Warning else LogLevel.Success)), errorMessage = if (code.isBlank()) "Enter a selection code before real publishing." else null)
+            current.copy(sessionState = SessionState.Published, injectStatus = if (code.isBlank()) InjectStatus.RetryAvailable else InjectStatus.Published, lastPublishedValue = value, lastInjectUrl = url, notificationState = backgroundSessionService.notificationFor(SessionState.Published.label), logs = prependLog(current.logs, logger.entry("Local publish simulation: $url", if (code.isBlank()) LogLevel.Warning else LogLevel.Success)), errorMessage = if (code.isBlank()) "Enter an Inject Code before real publishing." else null)
         }
     }
 
@@ -221,10 +221,10 @@ class WhisperCellViewModel : ViewModel() {
             val code = state.settings.selectionCode
             val value = "WhisperCell Test"
             if (code.isBlank()) {
-                _uiState.update { current -> current.copy(injectStatus = InjectStatus.RetryAvailable, errorMessage = "Enter your selection code first. Use only the code, not the full URL.", logs = prependLog(current.logs, logger.entry("Publish test blocked: no code entered.", LogLevel.Warning))) }
+                _uiState.update { current -> current.copy(injectStatus = InjectStatus.RetryAvailable, errorMessage = "Enter your Inject Code first. Use only the code, not the full URL.", logs = prependLog(current.logs, logger.entry("Publish test blocked: no code entered.", LogLevel.Warning))) }
                 return@launch
             }
-            _uiState.update { current -> current.copy(sessionState = SessionState.PublishingToInject, injectStatus = InjectStatus.Testing, lastInjectUrl = injectPublisher.publishUrl(code, value), logs = prependLog(current.logs, logger.entry("Testing publish URL with value parameter.")), errorMessage = null) }
+            _uiState.update { current -> current.copy(sessionState = SessionState.PublishingToInject, injectStatus = InjectStatus.Testing, lastInjectUrl = injectPublisher.publishUrl(code, value), logs = prependLog(current.logs, logger.entry("Testing fixed endpoint with JSON value field.")), errorMessage = null) }
             injectPublisher.publish(code, value, state.settings.injectRetryOnce).fold(
                 onSuccess = { _uiState.update { current -> current.copy(sessionState = SessionState.Published, injectStatus = InjectStatus.Connected, lastPublishedValue = value, logs = prependLog(current.logs, logger.entry("Test value transmitted.", LogLevel.Success)), errorMessage = null) } },
                 onFailure = { error -> _uiState.update { current -> current.copy(sessionState = SessionState.Error, injectStatus = InjectStatus.RetryAvailable, logs = prependLog(current.logs, logger.entry("Publish test failed: ${error.message ?: "Unknown error"}", LogLevel.Error)), errorMessage = "Publish test failed. Check code and network.") } }
@@ -239,7 +239,7 @@ class WhisperCellViewModel : ViewModel() {
             val code = state.settings.selectionCode
             if (value.isBlank()) { _uiState.update { it.copy(errorMessage = "No channel payload selected. Run extraction first.") }; return@launch }
             if (!state.settings.injectEnabled) { _uiState.update { it.copy(errorMessage = "Publishing is disabled. Turn it on first.") }; return@launch }
-            if (code.isBlank()) { _uiState.update { current -> current.copy(injectStatus = InjectStatus.RetryAvailable, errorMessage = "Enter your selection code before publishing.", logs = prependLog(current.logs, logger.entry("Publish blocked: missing code.", LogLevel.Warning))) }; return@launch }
+            if (code.isBlank()) { _uiState.update { current -> current.copy(injectStatus = InjectStatus.RetryAvailable, errorMessage = "Enter your Inject Code before publishing.", logs = prependLog(current.logs, logger.entry("Publish blocked: missing code.", LogLevel.Warning))) }; return@launch }
             setState(SessionState.PublishingToInject, "Publishing selected value.")
             _uiState.update { it.copy(injectStatus = InjectStatus.Publishing, lastInjectUrl = injectPublisher.publishUrl(code, value)) }
             injectPublisher.publish(code, value, state.settings.injectRetryOnce).fold(
@@ -263,7 +263,30 @@ class WhisperCellViewModel : ViewModel() {
     fun toggleChannelEnabled(channelId: String, enabled: Boolean) { updateChannel(channelId, if (enabled) "Channel enabled." else "Channel disabled.") { it.copy(enabled = enabled) } }
     fun toggleChannelAutoPublish(channelId: String, enabled: Boolean) { updateChannel(channelId, if (enabled) "Channel auto-publish enabled." else "Channel auto-publish disabled.") { it.copy(autoPublish = enabled) } }
     fun updateChannelPayloadFormat(channelId: String, value: String) { updateChannel(channelId, "Channel payload format updated.") { it.copy(payloadFormat = value) } }
-    fun testChannel(channelId: String) { viewModelScope.launch { processTranscript(_uiState.value.mockTranscriptInput, false) } }
+
+    fun testChannel(channelId: String) {
+        viewModelScope.launch {
+            val state = _uiState.value
+            val extracted = state.extractedData ?: extractionService.extract(
+                transcript = state.mockTranscriptInput,
+                startPhrases = if (state.settings.removeStartAndStopPhrases) state.settings.startPhrases else emptyList(),
+                stopPhrases = if (state.settings.removeStartAndStopPhrases) state.settings.stopPhrases else emptyList(),
+                aiEnabled = state.settings.openAiTranscriptionEnabled,
+                openAiApiKey = state.settings.openAiApiKey,
+                openAiModel = extractionModel(state)
+            )
+            val testProfile = state.activeProfile.copy(activeChannelIds = listOf(channelId), routingBehavior = RoutingBehavior.BestConfidenceMatch)
+            val match = channelMatcher.match(testProfile, state.channels, extracted).firstOrNull()
+            _uiState.update { current ->
+                current.copy(
+                    extractedData = extracted,
+                    selectedMatch = match,
+                    logs = prependLog(current.logs, logger.entry(match?.let { "Tested ${it.channel.name}: ${it.payload}" } ?: "No value matched this output.", if (match != null) LogLevel.Success else LogLevel.Warning)),
+                    errorMessage = if (match == null) "No value matched this output. Try a relevant transcript." else null
+                )
+            }
+        }
+    }
 
     fun toggleStartPhraseEnabled(enabled: Boolean) = updateSettings("Start Phrase ${if (enabled) "enabled" else "disabled"}.") { it.copy(startPhraseEnabled = enabled) }
     fun toggleStopPhraseEnabled(enabled: Boolean) = updateSettings("Stop Phrase ${if (enabled) "enabled" else "disabled"}.") { it.copy(stopPhraseEnabled = enabled) }
@@ -325,6 +348,7 @@ class WhisperCellViewModel : ViewModel() {
         _uiState.update { current -> current.copy(extractedData = extracted, currentTranscript = extracted.cleanedTranscript, lastTranscriptLine = extracted.cleanedTranscript, aiActivity = "${extracted.extractionSource}: detected ${extracted.detectedItems.size} value(s).", logs = prependLog(current.logs, logger.entry("${extracted.extractionSource}: detected ${extracted.detectedItems.size} value(s).")), errorMessage = null) }
         setState(SessionState.MatchingChannel, "Matching detected values against active channels.")
         rematchIfPossible()
+        transcriptBuffer.clear()
         if (publishAfterMatch && _uiState.value.selectedMatch != null) publishSelectedValue() else setState(SessionState.MatchingChannel, "Review Mode is on. Approve before publishing.")
     }
 
