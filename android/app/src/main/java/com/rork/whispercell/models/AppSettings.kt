@@ -1,6 +1,6 @@
 package com.rork.whispercell.models
 
-/** Global performer settings. Secrets are only held in memory in this preview build. */
+/** Global performer settings. Provider keys are held in memory only in this preview build. */
 data class AppSettings(
     val startPhraseEnabled: Boolean = true,
     val startPhrases: List<String> = listOf("Picture this clearly for me"),
@@ -10,17 +10,22 @@ data class AppSettings(
     val silenceBehavior: SilenceBehavior = SilenceBehavior.Ignore,
     val maximumCaptureSeconds: Int = 90,
     val manualBackupEnabled: Boolean = true,
+    val selectedSpeechProviderId: String = "mock",
     val openAiTranscriptionEnabled: Boolean = false,
+    val openAiApiKey: String = "",
     val openAiModel: String = "gpt-4o-mini-transcribe",
     val openAiRealtimeEnabled: Boolean = false,
     val openAiChunkEnabled: Boolean = true,
+    val openAiValidationStatus: String = "Not configured",
     val elevenLabsEnabled: Boolean = false,
+    val elevenLabsApiKey: String = "",
     val elevenLabsModel: String = "scribe_v1",
+    val elevenLabsValidationStatus: String = "Not configured",
     val language: String = "en",
     val cleanTranscriptMode: Boolean = true,
     val verbatimTranscriptMode: Boolean = false,
     val injectEnabled: Boolean = true,
-    val defaultInjectCode: String = "5850",
+    val defaultInjectCode: String = "",
     val injectTimeoutSeconds: Int = 8,
     val injectRetryOnce: Boolean = true,
     val reviewModeEnabled: Boolean = true,

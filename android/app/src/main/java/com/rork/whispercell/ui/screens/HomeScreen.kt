@@ -67,6 +67,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -154,10 +156,10 @@ fun HomeScreen(
                 MainTab.Performance -> PerformanceScreen(state, viewModel)
                 MainTab.Review -> ReviewScreen(state, viewModel)
                 MainTab.Profiles -> ProfilesScreen(state, viewModel)
-                MainTab.Channels -> ChannelsScreen(state)
+                MainTab.Channels -> ChannelsScreen(state, viewModel)
                 MainTab.Inject -> InjectScreen(state, viewModel)
                 MainTab.Logs -> LogsScreen(state)
-                MainTab.Settings -> SettingsScreen(state)
+                MainTab.Settings -> SettingsScreen(state, viewModel)
                 MainTab.Help -> HelpScreen()
             }
         }
@@ -171,24 +173,12 @@ private fun PerformanceScreen(state: PerformanceUiState, viewModel: WhisperCellV
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item {
-            SessionHero(state = state)
-        }
+        item { SessionHero(state = state) }
         item {
             SectionCard(title = "Hands-free controls", icon = Icons.Filled.RadioButtonChecked) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton(
-                        text = "Start Background Session",
-                        icon = Icons.Filled.PlayArrow,
-                        modifier = Modifier.weight(1f),
-                        onClick = viewModel::startBackgroundSession
-                    )
-                    DangerControlButton(
-                        text = "Panic Stop",
-                        icon = Icons.Filled.Emergency,
-                        modifier = Modifier.weight(1f),
-                        onClick = viewModel::panicStop
-                    )
+                    PrimaryControlButton("Start Background Session", Icons.Filled.PlayArrow, Modifier.weight(1f), viewModel::startBackgroundSession)
+                    DangerControlButton("Panic Stop", Icons.Filled.Emergency, Modifier.weight(1f), viewModel::panicStop)
                 }
                 Spacer(modifier = Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
@@ -209,8 +199,9 @@ private fun PerformanceScreen(state: PerformanceUiState, viewModel: WhisperCellV
                 InfoRow("Active profile", state.activeProfile.name)
                 InfoRow("Start Phrase", state.activeProfile.startPhrase)
                 InfoRow("Stop Phrase", state.activeProfile.stopPhrase)
-                InfoRow("Active channels", state.activeChannels.joinToString { it.name })
+                InfoRow("Active channels", state.activeChannels.joinToString { it.name }.ifBlank { "No active channels" })
                 InfoRow("Inject status", state.injectStatus.label)
+                InfoRow("Inject code", state.settings.defaultInjectCode.ifBlank { "Not configured" })
                 InfoRow("Notification", state.notificationState)
             }
         }
@@ -258,12 +249,7 @@ private fun SessionHero(state: PerformanceUiState) {
                 Spacer(modifier = Modifier.width(14.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text("SESSION STATUS", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(
-                        text = state.sessionState.label,
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Black,
-                        color = accent
-                    )
+                    Text(state.sessionState.label, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black, color = accent)
                 }
             }
             Text(
@@ -272,10 +258,10 @@ private fun SessionHero(state: PerformanceUiState) {
                 color = MaterialTheme.colorScheme.onSurface
             )
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                StatusChip("Review Mode ON")
+                StatusChip(if (state.activeProfile.reviewModeEnabled) "Review Mode ON" else "Review Mode OFF")
                 StatusChip(if (state.activeProfile.fullAutomationEnabled) "Full Automation ON" else "Full Automation OFF")
                 StatusChip("Silence ignored")
-                StatusChip("Mock STT ready")
+                StatusChip(state.speechProviders.firstOrNull { it.id == state.settings.selectedSpeechProviderId }?.displayName ?: "Mock STT ready")
             }
         }
     }
@@ -290,6 +276,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
         "My birthday is March 14.",
         "The serial number is A12345678B."
     )
+    val clipboard = LocalClipboardManager.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -298,7 +285,7 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
         item {
             SectionCard(title = "Mock Transcript Mode", icon = Icons.Filled.Article) {
                 Text(
-                    "Preview-safe testing without microphone access. Paste a line, play fake partials, extract, match the selected profile, and simulate Inject publishing.",
+                    "This is fully usable in preview: paste or load a transcript, run the active profile, review extracted values, and publish/simulate the selected Inject payload.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(12.dp))
@@ -345,12 +332,15 @@ private fun ReviewScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
                 InfoRow("Payload", state.selectedMatch?.payload ?: "Nothing ready")
                 InfoRow("Generated Inject URL", state.lastInjectUrl.ifBlank { "Generated after publish/test" })
                 Spacer(modifier = Modifier.height(10.dp))
-                PrimaryControlButton("Publish selected value to Inject", Icons.Filled.Publish, Modifier.fillMaxWidth(), viewModel::publishSelectedValue)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    PrimaryControlButton("Publish to Inject", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
+                    SecondaryControlButton("Copy payload", Icons.Filled.ContentCopy, Modifier.weight(1f)) {
+                        clipboard.setText(AnnotatedString(state.selectedMatch?.payload ?: state.lastPublishedValue))
+                    }
+                }
             }
         }
-        item {
-            EmergencyRevealCard(value = state.selectedMatch?.payload ?: state.lastPublishedValue)
-        }
+        item { EmergencyRevealCard(value = state.selectedMatch?.payload ?: state.lastPublishedValue) }
     }
 }
 
@@ -364,11 +354,40 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
         item {
             SectionCard(title = "Active Performance Profile", icon = Icons.Filled.Tune) {
                 InfoRow("Profile", state.activeProfile.name)
-                InfoRow("Start Phrase", state.activeProfile.startPhrase)
-                InfoRow("Stop Phrase", state.activeProfile.stopPhrase)
+                OutlinedTextField(
+                    value = state.activeProfile.startPhrase,
+                    onValueChange = viewModel::updateActiveProfileStartPhrase,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Start Phrase") },
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = state.activeProfile.stopPhrase,
+                    onValueChange = viewModel::updateActiveProfileStopPhrase,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Stop Phrase") },
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsToggleRow("Review Mode", state.activeProfile.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
+                SettingsToggleRow("Full Automation", state.activeProfile.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
                 InfoRow("Speech engine", state.activeProfile.speechProviderId)
-                InfoRow("Automation", if (state.activeProfile.fullAutomationEnabled) "Full Automation" else "Review Mode")
-                InfoRow("Inject code", state.activeProfile.injectCode)
+                InfoRow("Inject code", state.settings.defaultInjectCode.ifBlank { "Uses editable default Inject code" })
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Active channels for this profile", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                state.channels.forEach { channel ->
+                    SettingsToggleRow(
+                        label = channel.name,
+                        checked = channel.id in state.activeProfile.activeChannelIds,
+                        onCheckedChange = { enabled -> viewModel.toggleProfileChannel(channel.id, enabled) }
+                    )
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    SecondaryControlButton("Duplicate", Icons.Filled.ContentCopy, Modifier.weight(1f), viewModel::duplicateActiveProfile)
+                    SecondaryControlButton("Delete", Icons.Filled.DeleteSweep, Modifier.weight(1f), viewModel::deleteActiveProfile)
+                }
             }
         }
         items(state.profiles, key = { it.id }) { profile ->
@@ -378,7 +397,7 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
 }
 
 @Composable
-private fun ChannelsScreen(state: PerformanceUiState) {
+private fun ChannelsScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -386,15 +405,18 @@ private fun ChannelsScreen(state: PerformanceUiState) {
     ) {
         item {
             SectionCard(title = "Channel matching", icon = Icons.Filled.Route) {
-                Text("Channels publish to Inject only. They decide what matters, how it is formatted, and whether automation may send it.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("These controls are now live. Enable channels, change payload templates, pick default or custom Inject codes, test routing, and rerun extraction without leaving preview.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                InfoRow("Active profile", state.activeProfile.name)
+                InfoRow("Selected payload", state.selectedMatch?.payload ?: "Run a channel test or extraction")
             }
         }
-        items(state.channels, key = { it.id }) { channel -> ChannelCard(channel) }
+        items(state.channels, key = { it.id }) { channel -> ChannelCard(channel, viewModel) }
     }
 }
 
 @Composable
 private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
+    val clipboard = LocalClipboardManager.current
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -402,12 +424,24 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
     ) {
         item {
             SectionCard(title = "Inject setup", icon = Icons.Filled.Hub) {
+                SettingsToggleRow("Enable Inject", state.settings.injectEnabled, viewModel::toggleInjectEnabled)
+                OutlinedTextField(
+                    value = state.settings.defaultInjectCode,
+                    onValueChange = viewModel::updateInjectCode,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Inject Code") },
+                    supportingText = { Text("Enter your Inject code only. Max 7 letters or numbers. Do not paste the full URL.") },
+                    singleLine = true
+                )
                 InfoRow("Status", state.injectStatus.label)
-                InfoRow("Default Inject Code", state.settings.defaultInjectCode)
-                InfoRow("Instruction", "Enter your Inject code only. Do not paste the full URL.")
                 InfoRow("Generated URL", state.lastInjectUrl.ifBlank { "https://11z.co/_w/{INJECT_CODE}/selection?value={ENCODED_VALUE}" })
                 Spacer(modifier = Modifier.height(10.dp))
-                PrimaryControlButton("Test Inject", Icons.Filled.Bolt, Modifier.fillMaxWidth(), viewModel::testInject)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    PrimaryControlButton("Test Inject", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::testInject)
+                    SecondaryControlButton("Copy URL", Icons.Filled.ContentCopy, Modifier.weight(1f)) {
+                        clipboard.setText(AnnotatedString(state.lastInjectUrl))
+                    }
+                }
             }
         }
         item {
@@ -417,6 +451,8 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
                 InfoRow("Retry", if (state.settings.injectRetryOnce) "Retry once on failure" else "No retry")
                 InfoRow("Last sent value", state.lastPublishedValue)
                 InfoRow("Channel codes", "Default code or custom per channel")
+                Spacer(modifier = Modifier.height(8.dp))
+                PrimaryControlButton("Publish selected value to Inject", Icons.Filled.Publish, Modifier.fillMaxWidth(), viewModel::publishSelectedValue)
             }
         }
         item {
@@ -438,7 +474,7 @@ private fun LogsScreen(state: PerformanceUiState) {
     ) {
         item {
             SectionCard(title = "Session log", icon = Icons.Filled.Podcasts) {
-                Text("Current session only by default. No audio is saved unless explicitly enabled later.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Current session only by default. No audio is saved unless explicitly enabled.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         items(state.logs, key = { it.id }) { log -> LogRow(log) }
@@ -446,7 +482,7 @@ private fun LogsScreen(state: PerformanceUiState) {
 }
 
 @Composable
-private fun SettingsScreen(state: PerformanceUiState) {
+private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellViewModel) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -454,44 +490,104 @@ private fun SettingsScreen(state: PerformanceUiState) {
     ) {
         item {
             SectionCard(title = "Start and stop phrases", icon = Icons.Filled.Tune) {
-                SettingsToggleRow("Start Phrase enabled", state.settings.startPhraseEnabled)
-                InfoRow("Start Phrase text", state.settings.startPhrases.joinToString())
-                SettingsToggleRow("Stop Phrase enabled", state.settings.stopPhraseEnabled)
-                InfoRow("Stop Phrase text", state.settings.stopPhrases.joinToString())
-                SettingsToggleRow("Remove phrases from transcript", state.settings.removeStartAndStopPhrases)
+                SettingsToggleRow("Start Phrase enabled", state.settings.startPhraseEnabled, viewModel::toggleStartPhraseEnabled)
+                OutlinedTextField(
+                    value = state.activeProfile.startPhrase,
+                    onValueChange = viewModel::updateActiveProfileStartPhrase,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Start Phrase text") },
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsToggleRow("Stop Phrase enabled", state.settings.stopPhraseEnabled, viewModel::toggleStopPhraseEnabled)
+                OutlinedTextField(
+                    value = state.activeProfile.stopPhrase,
+                    onValueChange = viewModel::updateActiveProfileStopPhrase,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Stop Phrase text") },
+                    singleLine = true
+                )
+                SettingsToggleRow("Remove phrases from transcript", state.settings.removeStartAndStopPhrases, viewModel::toggleRemovePhrases)
                 InfoRow("Silence behavior", "Ignore silence as stop trigger")
-                InfoRow("Maximum capture", "${state.settings.maximumCaptureSeconds} seconds")
+                OutlinedTextField(
+                    value = state.settings.maximumCaptureSeconds.toString(),
+                    onValueChange = viewModel::updateMaximumCaptureSeconds,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Maximum capture seconds") },
+                    singleLine = true
+                )
             }
         }
         item {
             SectionCard(title = "Speech providers", icon = Icons.Filled.Mic) {
-                state.speechProviders.forEach { provider -> ProviderRow(provider) }
+                state.speechProviders.forEach { provider ->
+                    ProviderRow(
+                        provider = provider,
+                        isSelected = provider.id == state.settings.selectedSpeechProviderId,
+                        onSelect = { viewModel.selectSpeechProvider(provider.id) }
+                    )
+                }
             }
         }
         item {
             SectionCard(title = "OpenAI transcription", icon = Icons.Filled.Bolt) {
-                SettingsToggleRow("Enable OpenAI Transcription", state.settings.openAiTranscriptionEnabled)
-                InfoRow("Model", state.settings.openAiModel)
-                SettingsToggleRow("Realtime transcription toggle", state.settings.openAiRealtimeEnabled)
-                SettingsToggleRow("Chunk transcription toggle", state.settings.openAiChunkEnabled)
-                InfoRow("Custom model", "Supported by settings architecture")
-                InfoRow("Validate Key", "UI boundary ready; do not hardcode secrets")
+                SettingsToggleRow("Enable OpenAI Transcription", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
+                OutlinedTextField(
+                    value = state.settings.openAiApiKey,
+                    onValueChange = viewModel::updateOpenAiApiKey,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("OpenAI API Key") },
+                    supportingText = { Text("Stored in memory for this preview session. Do not share secrets in screenshots.") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = state.settings.openAiModel,
+                    onValueChange = viewModel::updateOpenAiModel,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Model or custom model name") },
+                    singleLine = true
+                )
+                SettingsToggleRow("Realtime transcription toggle", state.settings.openAiRealtimeEnabled, viewModel::toggleOpenAiRealtime)
+                SettingsToggleRow("Chunk transcription toggle", state.settings.openAiChunkEnabled, viewModel::toggleOpenAiChunk)
+                InfoRow("Validation", state.settings.openAiValidationStatus)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    SecondaryControlButton("Validate Key", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::validateOpenAiKey)
+                    PrimaryControlButton("Test transcription", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testOpenAiTranscription)
+                }
             }
         }
         item {
             SectionCard(title = "ElevenLabs Speech to Text", icon = Icons.Filled.Article) {
-                SettingsToggleRow("Enable ElevenLabs Speech to Text", state.settings.elevenLabsEnabled)
-                InfoRow("Model/provider mode", state.settings.elevenLabsModel)
-                InfoRow("Validate Key", "UI boundary ready; optional provider")
+                SettingsToggleRow("Enable ElevenLabs Speech to Text", state.settings.elevenLabsEnabled, viewModel::toggleElevenLabsEnabled)
+                OutlinedTextField(
+                    value = state.settings.elevenLabsApiKey,
+                    onValueChange = viewModel::updateElevenLabsApiKey,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("ElevenLabs API Key") },
+                    singleLine = true
+                )
+                OutlinedTextField(
+                    value = state.settings.elevenLabsModel,
+                    onValueChange = viewModel::updateElevenLabsModel,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Model/provider mode") },
+                    singleLine = true
+                )
+                InfoRow("Validation", state.settings.elevenLabsValidationStatus)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    SecondaryControlButton("Validate Key", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::validateElevenLabsKey)
+                    PrimaryControlButton("Test transcription", Icons.Filled.Mic, Modifier.weight(1f), viewModel::testElevenLabsTranscription)
+                }
             }
         }
         item {
             SectionCard(title = "Privacy and automation", icon = Icons.Filled.Settings) {
-                SettingsToggleRow("Review Mode", state.settings.reviewModeEnabled)
-                SettingsToggleRow("Full Automation", state.settings.fullAutomationEnabled)
-                SettingsToggleRow("Audio Save", state.settings.audioSavingEnabled)
+                SettingsToggleRow("Review Mode", state.settings.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
+                SettingsToggleRow("Full Automation", state.settings.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
+                SettingsToggleRow("Audio Save", state.settings.audioSavingEnabled, viewModel::toggleAudioSaving)
+                SettingsToggleRow("Keep logs for 24 hours", state.settings.keepLogsFor24Hours, viewModel::toggleKeepLogs24Hours)
                 InfoRow("Transcript Save", state.settings.transcriptSavePolicy)
-                SettingsToggleRow("Continue listening after publish", state.settings.continueListeningAfterPublish)
+                SettingsToggleRow("Continue listening after publish", state.settings.continueListeningAfterPublish, viewModel::toggleContinueListening)
             }
         }
     }
@@ -564,11 +660,7 @@ private fun SectionCard(title: String, icon: ImageVector, content: @Composable C
 
 @Composable
 private fun PrimaryControlButton(text: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = modifier.height(56.dp),
-        shape = RoundedCornerShape(16.dp)
-    ) {
+    Button(onClick = onClick, modifier = modifier.height(56.dp), shape = RoundedCornerShape(16.dp)) {
         Icon(icon, contentDescription = null)
         Spacer(modifier = Modifier.width(8.dp))
         Text(text, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -577,11 +669,7 @@ private fun PrimaryControlButton(text: String, icon: ImageVector, modifier: Modi
 
 @Composable
 private fun SecondaryControlButton(text: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    OutlinedButton(
-        onClick = onClick,
-        modifier = modifier.height(52.dp),
-        shape = RoundedCornerShape(16.dp)
-    ) {
+    OutlinedButton(onClick = onClick, modifier = modifier.height(52.dp), shape = RoundedCornerShape(16.dp)) {
         Icon(icon, contentDescription = null)
         Spacer(modifier = Modifier.width(6.dp))
         Text(text, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -611,7 +699,7 @@ private fun InfoRow(label: String, value: String) {
 }
 
 @Composable
-private fun SettingsToggleRow(label: String, checked: Boolean) {
+private fun SettingsToggleRow(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -619,7 +707,7 @@ private fun SettingsToggleRow(label: String, checked: Boolean) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(label, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
-        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
@@ -681,32 +769,58 @@ private fun ProfileCard(profile: PerformanceProfile, isActive: Boolean, onActiva
 }
 
 @Composable
-private fun ChannelCard(channel: Channel) {
+private fun ChannelCard(channel: Channel, viewModel: WhisperCellViewModel) {
     SectionCard(title = channel.name, icon = Icons.Filled.Route) {
-        SettingsToggleRow("Enabled", channel.enabled)
+        SettingsToggleRow("Enabled", channel.enabled) { enabled -> viewModel.toggleChannelEnabled(channel.id, enabled) }
         InfoRow("Input category", channel.inputCategories.joinToString { it.label })
         InfoRow("Extraction priority", channel.priority.joinToString { it.label })
-        InfoRow("Payload format", channel.payloadFormat)
-        InfoRow("Inject code", if (channel.useDefaultInjectCode) "Default Inject code" else channel.customInjectCode.orEmpty())
-        InfoRow("Auto-publish", if (channel.autoPublish) "Enabled" else "Off by default")
+        OutlinedTextField(
+            value = channel.payloadFormat,
+            onValueChange = { value -> viewModel.updateChannelPayloadFormat(channel.id, value) },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Payload format") },
+            singleLine = true
+        )
+        SettingsToggleRow("Use default Inject code", channel.useDefaultInjectCode) { enabled -> viewModel.toggleChannelUseDefaultInjectCode(channel.id, enabled) }
+        if (!channel.useDefaultInjectCode) {
+            OutlinedTextField(
+                value = channel.customInjectCode.orEmpty(),
+                onValueChange = { value -> viewModel.updateChannelCustomInjectCode(channel.id, value) },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Custom Inject code") },
+                singleLine = true
+            )
+        }
+        SettingsToggleRow("Auto-publish", channel.autoPublish) { enabled -> viewModel.toggleChannelAutoPublish(channel.id, enabled) }
         InfoRow("Confidence threshold", "${(channel.confidenceThreshold * 100).toInt()}%")
         InfoRow("Cooldown", "${channel.cooldownSeconds} seconds")
+        Spacer(modifier = Modifier.height(8.dp))
+        PrimaryControlButton("Test channel", Icons.Filled.Bolt, Modifier.fillMaxWidth()) { viewModel.testChannel(channel.id) }
     }
 }
 
 @Composable
-private fun ProviderRow(provider: SpeechProviderInfo) {
+private fun ProviderRow(provider: SpeechProviderInfo, isSelected: Boolean, onSelect: () -> Unit) {
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp),
         shape = RoundedCornerShape(14.dp),
-        color = Color(0xFF0F1B24)
+        color = if (isSelected) Color(0xFF142936) else Color(0xFF0F1B24),
+        border = androidx.compose.foundation.BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color(0xFF203B45))
     ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(provider.displayName, fontWeight = FontWeight.Bold)
-            Text("Mode: ${provider.mode} • Background: ${if (provider.supportsBackground) "Yes" else "No"} • Partials: ${if (provider.supportsPartialResults) "Yes" else "No"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(provider.status, color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
+        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(provider.displayName, fontWeight = FontWeight.Bold)
+                    Text("Mode: ${provider.mode} • Background: ${if (provider.supportsBackground) "Yes" else "No"} • Partials: ${if (provider.supportsPartialResults) "Yes" else "No"}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(provider.status, color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
+                }
+                if (isSelected) StatusChip("Selected")
+            }
+            OutlinedButton(onClick = onSelect, enabled = !isSelected, modifier = Modifier.fillMaxWidth()) {
+                Text(if (isSelected) "Selected provider" else "Select provider")
+            }
         }
     }
 }
