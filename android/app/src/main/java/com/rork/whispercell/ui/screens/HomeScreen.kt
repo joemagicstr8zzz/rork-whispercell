@@ -323,6 +323,24 @@ private fun ProofScreen(state: PerformanceUiState, viewModel: WhisperCellViewMod
             }
         }
         item {
+            SectionCard("Transcript Brain", Icons.Filled.Bolt) {
+                val brain = state.transcriptBrain
+                if (brain == null) {
+                    Text("Waiting for a finished capture. The brain runs after the Stop Phrase closes the transcript.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                } else {
+                    InfoRow("Primary payload", brain.primaryPayload.ifBlank { "None" })
+                    InfoRow("Routine guess", brain.routineGuess)
+                    InfoRow("Confidence", "${(brain.confidence * 100).toInt()}%")
+                    InfoRow("Decision", if (brain.shouldPublish) "Safe to publish" else "Review before publishing")
+                    InfoRow("Reason", brain.reasoning)
+                    if (brain.backupPayloads.isNotEmpty()) InfoRow("Backups", brain.backupPayloads.joinToString(" • "))
+                    if (brain.rejectedValues.isNotEmpty()) InfoRow("Rejected/corrected", brain.rejectedValues.joinToString(" • "))
+                    if (brain.warnings.isNotEmpty()) InfoRow("Warnings", brain.warnings.joinToString(" • "))
+                    InfoRow("Emergency reveal", brain.emergencyRevealText)
+                }
+            }
+        }
+        item {
             SectionCard("Detected values", Icons.Filled.Bolt) {
                 val items = state.extractedData?.detectedItems.orEmpty()
                 if (items.isEmpty()) {
@@ -335,16 +353,16 @@ private fun ProofScreen(state: PerformanceUiState, viewModel: WhisperCellViewMod
         item {
             SectionCard("Selected output", Icons.Filled.Publish) {
                 InfoRow("Output", state.selectedMatch?.channel?.name ?: "No output selected")
-                InfoRow("Payload", state.selectedMatch?.payload ?: "Nothing ready")
+                InfoRow("Payload", state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: "Nothing ready")
                 InfoRow("Endpoint", state.lastInjectUrl.ifBlank { "Generated after code is set" })
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                     PrimaryControlButton("Publish once", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
-                    SecondaryControlButton("Copy payload", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.selectedMatch?.payload ?: state.lastPublishedValue)) }
+                    SecondaryControlButton("Copy payload", Icons.Filled.ContentCopy, Modifier.weight(1f)) { clipboard.setText(AnnotatedString(state.transcriptBrain?.primaryPayload?.takeIf { it.isNotBlank() } ?: state.selectedMatch?.payload ?: state.lastPublishedValue)) }
                 }
             }
         }
-        item { EmergencyRevealCard(state.selectedMatch?.payload ?: state.lastPublishedValue) }
+        item { EmergencyRevealCard(state.transcriptBrain?.emergencyRevealText ?: state.selectedMatch?.payload ?: state.lastPublishedValue) }
     }
 }
 
@@ -412,7 +430,7 @@ private fun InjectScreen(state: PerformanceUiState, viewModel: WhisperCellViewMo
                 PrimaryControlButton("Publish selected value", Icons.Filled.Publish, Modifier.fillMaxWidth(), viewModel::publishSelectedValue)
             }
         }
-        item { EmergencyRevealCard(state.selectedMatch?.payload ?: state.lastPublishedValue) }
+        item { EmergencyRevealCard(state.transcriptBrain?.emergencyRevealText ?: state.selectedMatch?.payload ?: state.lastPublishedValue) }
     }
 }
 
@@ -483,7 +501,7 @@ private fun SettingsScreen(state: PerformanceUiState, viewModel: WhisperCellView
 private fun HelpScreen() {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item { SectionCard("Welcome to WhisperCell", Icons.Filled.Help) { Text("WhisperCell listens for a natural start phrase, captures conversation, extracts useful performance information, and publishes the chosen value using your Inject Code.", color = MaterialTheme.colorScheme.onSurfaceVariant) } }
-        item { SectionCard("Basic setup", Icons.Filled.RadioButtonChecked) { listOf("Choose a routine.", "Set natural start and stop phrases.", "Enter your Inject Code only.", "Start Background Session.", "Perform normally.", "Confirm transcript proof.", "Publish the selected value once.").forEachIndexed { index, step -> Text("${index + 1}. $step", color = MaterialTheme.colorScheme.onSurface) } } }
+        item { SectionCard("Basic setup", Icons.Filled.RadioButtonChecked) { listOf("Choose a routine.", "Set natural start and stop phrases.", "Enter your Inject Code only.", "Start Background Session.", "Perform normally.", "Confirm transcript proof.", "Let Transcript Brain choose the safest payload.", "Publish the selected value once.").forEachIndexed { index, step -> Text("${index + 1}. $step", color = MaterialTheme.colorScheme.onSurface) } } }
     }
 }
 
