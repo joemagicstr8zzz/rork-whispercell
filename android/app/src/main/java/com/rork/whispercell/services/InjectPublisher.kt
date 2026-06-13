@@ -68,7 +68,6 @@ class InjectPublisher {
 
     private suspend fun postValue(endpoint: String, value: String): String {
         val body = buildJsonObject {
-            put("count", System.currentTimeMillis())
             put("value", value)
         }.toString()
 
