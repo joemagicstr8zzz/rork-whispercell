@@ -2,26 +2,19 @@ package com.rork.whispercell.services
 
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.engine.android.Android
-import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.http.isSuccess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-class InjectPublisher {
-    private val client: HttpClient = HttpClient(Android) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 8_000
-            connectTimeoutMillis = 8_000
-            socketTimeoutMillis = 8_000
-        }
-    }
-
+class InjectPublisher(
+    private val client: HttpClient = NetworkClient.http
+) {
     fun sanitizeInjectCode(input: String): String = input.filter { it.isLetterOrDigit() }.take(7)
 
     fun endpoint(injectCode: String = ""): String {
@@ -31,25 +24,12 @@ class InjectPublisher {
 
     fun publishUrl(injectCode: String, value: String): String = endpoint(injectCode)
 
-    suspend fun publish(injectCode: String, value: String, retryOnce: Boolean = false): Result<String> {
+    suspend fun publish(injectCode: String, value: String, retryOnce: Boolean = false): Result<String> = withContext(Dispatchers.IO) {
         val cleanCode = sanitizeInjectCode(injectCode)
         val cleanValue = value.trim()
-        if (cleanCode.isBlank()) return Result.failure(IllegalArgumentException("Code is required"))
-        if (cleanValue.isBlank()) return Result.failure(IllegalArgumentException("Value is required"))
-        return postWithRetry(endpoint(cleanCode), cleanValue, retryOnce)
-    }
-
-    suspend fun publish(value: String, retryOnce: Boolean): Result<String> =
-        Result.failure(IllegalArgumentException("Code is required"))
-
-    suspend fun receive(injectCode: String): Result<String> {
-        val cleanCode = sanitizeInjectCode(injectCode)
-        if (cleanCode.isBlank()) return Result.failure(IllegalArgumentException("Code is required"))
-        return runCatching {
-            val response = client.get(endpoint(cleanCode))
-            if (!response.status.isSuccess()) error("Endpoint returned ${response.status.value}")
-            response.body<String>()
-        }
+        if (cleanCode.isBlank()) return@withContext Result.failure(IllegalArgumentException("Code is required"))
+        if (cleanValue.isBlank()) return@withContext Result.failure(IllegalArgumentException("Value is required"))
+        postWithRetry(endpoint(cleanCode), cleanValue, retryOnce)
     }
 
     private suspend fun postWithRetry(endpoint: String, value: String, retryOnce: Boolean): Result<String> {
@@ -66,10 +46,7 @@ class InjectPublisher {
     }
 
     private suspend fun postValue(endpoint: String, value: String): String {
-        val body = buildJsonObject {
-            put("value", value)
-        }.toString()
-
+        val body = buildJsonObject { put("value", value) }.toString()
         val response = client.post(endpoint) {
             contentType(ContentType.Application.Json)
             setBody(body)
