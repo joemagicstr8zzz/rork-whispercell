@@ -28,7 +28,12 @@ class TranscriptBrainService(
         val rejected = findRejectedValues(items, lowerTranscript)
         val correctedItems = removeRejected(items, rejected)
         val strongestItem = correctedItems.maxWithOrNull(compareBy<DetectedItem> { it.confidence }.thenBy { positionScore(it, lowerTranscript) })
-        val plannedQuery = queryPlanner.plan(extracted.bestMatches, correctedItems, transcript)
+        val plannedQuery = queryPlanner.plan(
+            best = extracted.bestMatches,
+            items = correctedItems,
+            transcript = transcript,
+            aiSuggestedQuery = extracted.suggestedSearchQuery
+        )
         val selectedPayload = selectedMatch?.payload.orEmpty().takeIf { it.isNotBlank() && !payloadLooksRejected(it, rejected) }
         val primary = plannedQuery.query.ifBlank { selectedPayload.orEmpty() }.ifBlank { strongestItem?.normalizedValue.orEmpty() }
 
