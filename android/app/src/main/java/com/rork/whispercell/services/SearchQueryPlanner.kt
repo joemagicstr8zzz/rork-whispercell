@@ -6,7 +6,23 @@ import com.rork.whispercell.models.DetectedItem
 
 /** Builds the human-looking Google-style query that gets sent to Inject. */
 class SearchQueryPlanner {
-    fun plan(best: BestMatchSummary, items: List<DetectedItem>, transcript: String): PlannedSearchQuery {
+    fun plan(
+        best: BestMatchSummary,
+        items: List<DetectedItem>,
+        transcript: String,
+        aiSuggestedQuery: String? = null
+    ): PlannedSearchQuery {
+        val suggested = aiSuggestedQuery?.sanitizeQuery()
+        if (!suggested.isNullOrBlank()) {
+            return PlannedSearchQuery(
+                query = suggested,
+                intent = "AI planned search",
+                confidence = 0.96f,
+                reason = "OpenAI created a natural Google-style search query from the full transcript.",
+                alternatives = fallbackAlternatives(best, items, transcript)
+            )
+        }
+
         val context = transcript.lowercase()
         val person = bestValue(items, transcript, DetectedCategory.Celebrity, DetectedCategory.Name) ?: best.name
         val place = best.place ?: best.country ?: best.city ?: bestValue(items, transcript, DetectedCategory.Place, DetectedCategory.Country, DetectedCategory.City)
@@ -21,6 +37,7 @@ class SearchQueryPlanner {
         val number = best.number ?: bestValue(items, transcript, DetectedCategory.Number)
         val color = best.color ?: bestValue(items, transcript, DetectedCategory.Color)
         val phrase = best.phrase?.takeIf { it.isNotBlank() }
+        val word = best.word ?: bestValue(items, transcript, DetectedCategory.Word)
 
         val normalizedDate = date?.let { simplifyDate(it) }
         val normalizedBirthday = birthdayDate?.let { simplifyDate(it) }
@@ -69,6 +86,7 @@ class SearchQueryPlanner {
             objectValue != null -> exact(objectValue, "object search", 0.74f, "An object was mentioned, so WhisperCell used it naturally.")
             number != null -> exact(number, "number search", 0.72f, "A number was mentioned, so WhisperCell used it exactly.")
             color != null -> exact(color, "color search", 0.7f, "A color was mentioned, so WhisperCell used it naturally.")
+            word != null -> exact("definition of $word", "definition search", 0.72f, "A standalone word was detected, so WhisperCell built a definition search.")
             phrase != null -> exact(phrase, "phrase search", 0.68f, "A phrase was mentioned, so WhisperCell used it as the query.")
             else -> fallbackFromTranscript(transcript)
         }
@@ -93,6 +111,23 @@ class SearchQueryPlanner {
         )
     }
 
+    private fun fallbackAlternatives(best: BestMatchSummary, items: List<DetectedItem>, transcript: String): List<String> = listOfNotNull(
+        best.name,
+        best.place,
+        best.date ?: best.birthday,
+        best.card,
+        best.song,
+        best.artist,
+        best.serial,
+        best.zodiac,
+        best.word?.let { "definition of $it" }
+    ).plus(items.sortedByDescending { it.confidence }.map { it.normalizedValue })
+        .map { it.trim() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .take(6)
+        .ifEmpty { listOfNotNull(transcript.take(120).takeIf { it.isNotBlank() }) }
+
     private fun bestValue(items: List<DetectedItem>, transcript: String, vararg categories: DetectedCategory): String? {
         val transcriptLength = transcript.length.coerceAtLeast(1)
         val categorySet = categories.toSet()
@@ -109,6 +144,10 @@ class SearchQueryPlanner {
         .replace(Regex(",?\\s+\\d{4}\\b"), "")
         .replace(Regex("\\s+"), " ")
         .trim()
+
+    private fun String.sanitizeQuery(): String = replace(Regex("\\s+"), " ")
+        .trim()
+        .removeSurrounding("\"")
 }
 
 data class PlannedSearchQuery(
