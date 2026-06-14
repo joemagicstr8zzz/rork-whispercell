@@ -7,14 +7,14 @@ import com.rork.whispercell.models.DetectedItem
 import com.rork.whispercell.models.ExtractedPerformanceData
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
-import io.ktor.client.engine.android.Android
-import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.accept
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -29,19 +29,24 @@ import kotlinx.serialization.json.put
 
 /** AI-first extraction boundary. Uses OpenAI when configured, otherwise deterministic fallback. */
 class AIExtractionService(
-    private val fallback: RuleExtractionService = RuleExtractionService()
+    private val fallback: RuleExtractionService = RuleExtractionService(),
+    private val client: HttpClient = NetworkClient.http
 ) {
     val systemPrompt: String = """
-        You are an extraction engine for a live performance utility. Your job is to read a transcript and extract only information that was actually spoken. Do not invent missing values. Return structured JSON only. Identify useful performance targets such as names, dates, birthdays, places, countries, cities, playing cards, numbers, serial numbers, songs, artists, lyrics, colors, objects, zodiac signs, emotions, celebrities, movies, animals, times, and full confabulation summaries. Normalize obvious values, but preserve the original spoken meaning. If unsure, lower the confidence score. Do not include start phrases or stop phrases in the final payload.
+        You are an extraction and search-query planning engine for a live performance utility.
+        Read the transcript and extract only information that was actually spoken. Do not invent missing facts.
+        Also create suggestedSearchQuery: the exact natural Google-style search someone would type from the spoken information.
+        The query must look human, not like a database field. Do not prefix values with CARD:, DATE:, NAME:, etc.
+        Examples:
+        - Keanu Reeves and Spain -> has Keanu Reeves ever visited Spain
+        - Keanu Reeves, Spain, March 14 -> was Keanu Reeves in Spain on March 14
+        - birthday March 14 -> celebrities born March 14
+        - Queen of Hearts -> Queen of Hearts
+        - Scorpio -> Scorpio horoscope
+        - Bohemian Rhapsody by Queen -> Bohemian Rhapsody Queen
+        - a random word like ephemeral -> definition of ephemeral
+        Return structured JSON only.
     """.trimIndent()
-
-    private val client: HttpClient = HttpClient(Android) {
-        install(HttpTimeout) {
-            requestTimeoutMillis = 20_000
-            connectTimeoutMillis = 12_000
-            socketTimeoutMillis = 20_000
-        }
-    }
 
     private val json: Json = Json { ignoreUnknownKeys = true }
 
@@ -62,20 +67,22 @@ class AIExtractionService(
             )
         }
 
-        return runCatching {
-            val content: String = requestOpenAiExtraction(
-                transcript = transcript,
-                startPhrases = startPhrases,
-                stopPhrases = stopPhrases,
-                apiKey = openAiApiKey,
-                model = openAiModel.ifBlank { "gpt-4o-mini" }
-            )
-            parseOpenAiExtraction(content, fallbackResult)
-        }.getOrElse { throwable ->
-            fallbackResult.copy(
-                notes = listOf("GPT extraction failed: ${throwable.message ?: "Unknown error"}. Rule fallback produced this result."),
-                extractionSource = "Rule fallback — GPT failed"
-            )
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                val content: String = requestOpenAiExtraction(
+                    transcript = transcript,
+                    startPhrases = startPhrases,
+                    stopPhrases = stopPhrases,
+                    apiKey = openAiApiKey,
+                    model = openAiModel.ifBlank { "gpt-4o-mini" }
+                )
+                parseOpenAiExtraction(content, fallbackResult)
+            }.getOrElse { throwable ->
+                fallbackResult.copy(
+                    notes = listOf("GPT extraction failed: ${throwable.message ?: "Unknown error"}. Rule fallback produced this result."),
+                    extractionSource = "Rule fallback — GPT failed"
+                )
+            }
         }
     }
 
@@ -110,12 +117,19 @@ class AIExtractionService(
                                     Return JSON with this shape:
                                     {
                                       "cleanedTranscript": "string",
-                                      "detectedItems": [{"category":"place|celebrity|date|playing_card|song|artist|serial_number|zodiac|name|object|color|number|phrase|full_confabulation", "value":"string", "normalizedValue":"string", "confidence":0.0, "sourcePhrase":"string", "shouldPublish":true}],
-                                      "bestMatches": {"place":"string", "name":"string", "date":"string", "card":"string", "song":"string", "artist":"string", "serial":"string", "zodiac":"string", "object":"string", "fullConfabulation":"string"},
+                                      "suggestedSearchQuery": "natural Google-style search string",
+                                      "detectedItems": [{"category":"place|celebrity|date|birthday|playing_card|song|artist|serial_number|zodiac|name|object|color|number|phrase|word|full_confabulation", "value":"string", "normalizedValue":"string", "confidence":0.0, "sourcePhrase":"string", "shouldPublish":true}],
+                                      "bestMatches": {"word":"string", "phrase":"string", "place":"string", "name":"string", "date":"string", "birthday":"string", "card":"string", "song":"string", "artist":"string", "serial":"string", "zodiac":"string", "object":"string", "number":"string", "color":"string", "fullConfabulation":"string"},
                                       "confabulation": {"place":"string", "person":"string", "date":"string", "summary":"string"},
                                       "confidence":0.0,
                                       "notes":["string"]
                                     }
+                                    Search query rules:
+                                    - Build the kind of search a normal person would type into Google.
+                                    - If the transcript is only a random word, use "definition of [word]" unless another intent is clear.
+                                    - If multiple spoken facts naturally combine into a question, make the query a question.
+                                    - Never add category labels like CARD:, DATE:, NAME:, or PLACE:.
+                                    - Do not invent facts not stated in the transcript.
                                     Start phrases to remove: ${startPhrases.joinToString(" | ")}
                                     Stop phrases to remove: ${stopPhrases.joinToString(" | ")}
                                     Transcript: $transcript
@@ -137,6 +151,7 @@ class AIExtractionService(
     private fun parseOpenAiExtraction(content: String, fallbackResult: ExtractedPerformanceData): ExtractedPerformanceData {
         val root: JsonObject = json.parseToJsonElement(content.trim()).jsonObject
         val cleanedTranscript: String = root["cleanedTranscript"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: fallbackResult.cleanedTranscript
+        val suggestedSearchQuery: String? = root["suggestedSearchQuery"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
         val detectedItems: List<DetectedItem> = parseDetectedItems(root["detectedItems"] as? JsonArray).ifEmpty { fallbackResult.detectedItems }
         val bestMatches: BestMatchSummary = parseBestMatches(root["bestMatches"] as? JsonObject, detectedItems, fallbackResult.bestMatches)
         val confabulation: ConfabulationPayload? = parseConfabulation(root["confabulation"] as? JsonObject, bestMatches)
@@ -149,8 +164,9 @@ class AIExtractionService(
             bestMatches = if (confabulation != null && bestMatches.fullConfabulation.isNullOrBlank()) bestMatches.copy(fullConfabulation = confabulation.summary) else bestMatches,
             confabulation = confabulation,
             confidence = confidence.coerceIn(0f, 1f),
-            notes = listOf("GPT extraction completed with model response JSON.") + notes,
-            extractionSource = "OpenAI GPT extraction"
+            notes = listOf("GPT extraction and search-query planning completed.") + notes,
+            extractionSource = "OpenAI GPT extraction",
+            suggestedSearchQuery = suggestedSearchQuery
         )
     }
 
