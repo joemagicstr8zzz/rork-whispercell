@@ -9,5 +9,6 @@ data class ExtractedPerformanceData(
     val confabulation: ConfabulationPayload? = null,
     val confidence: Float,
     val notes: List<String> = emptyList(),
-    val extractionSource: String = "Rule fallback"
+    val extractionSource: String = "Rule fallback",
+    val suggestedSearchQuery: String? = null
 )
