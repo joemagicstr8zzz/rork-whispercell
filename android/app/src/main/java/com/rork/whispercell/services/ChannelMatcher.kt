@@ -11,18 +11,21 @@ class ChannelMatcher(
 ) {
     fun match(profile: PerformanceProfile, channels: List<Channel>, data: ExtractedPerformanceData): List<ChannelMatch> {
         val activeChannels: List<Channel> = channels.filter { channel -> channel.enabled && profile.activeChannelIds.contains(channel.id) }
+        val strongestItem = data.detectedItems.filter { it.shouldPublish }.maxByOrNull { it.confidence }
         val matches: List<ChannelMatch> = activeChannels.mapNotNull { channel ->
             val item = channel.priority.flatMap { category -> data.detectedItems.filter { it.category == category } }
                 .filter { it.confidence >= channel.confidenceThreshold && it.shouldPublish }
                 .maxByOrNull { it.confidence }
                 ?: data.detectedItems.filter { it.category in channel.inputCategories && it.confidence >= channel.confidenceThreshold && it.shouldPublish }.maxByOrNull { it.confidence }
-            val payload: String = formatter.format(channel, item, data)
-            if (payload.isBlank()) null else ChannelMatch(
+                ?: strongestItem
+            val formatted = formatter.format(channel, item, data)
+            val output = formatted.ifBlank { item?.normalizedValue.orEmpty() }.ifBlank { data.bestMatches.fullConfabulation.orEmpty() }
+            if (output.isBlank()) null else ChannelMatch(
                 channel = channel,
                 item = item,
-                payload = payload,
+                payload = output,
                 confidence = item?.confidence ?: data.confidence,
-                reason = if (item != null) "Matched ${item.category.label}" else "Fallback/template output"
+                reason = if (item != null) "Matched ${item.category.label}" else "Template output"
             )
         }
         return when (profile.routingBehavior) {
