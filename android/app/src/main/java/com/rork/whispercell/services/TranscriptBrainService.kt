@@ -11,8 +11,8 @@ import com.rork.whispercell.models.TranscriptBrainResult
 import kotlin.math.max
 
 /**
- * A lightweight intelligence layer that interprets the transcript after capture.
- * Extraction says what was heard. The brain decides what probably matters.
+ * Intelligent routing layer for WhisperCell.
+ * Extraction says what was heard. The brain decides what should be sent to Inject.
  */
 class TranscriptBrainService {
     fun analyze(
@@ -27,28 +27,20 @@ class TranscriptBrainService {
         val warnings = mutableListOf<String>()
         val rejected = findRejectedValues(items, lowerTranscript)
         val correctedItems = removeRejected(items, rejected)
-        val routineGuess = guessRoutine(activeProfile, activeChannels, extracted.bestMatches)
-        val selectedPayload = selectedMatch?.payload.orEmpty()
-        val confabPayload = buildConfabPayload(extracted.bestMatches)
         val strongestItem = correctedItems.maxWithOrNull(compareBy<DetectedItem> { it.confidence }.thenBy { positionScore(it, lowerTranscript) })
+        val smartDecision = decideSmartPayload(extracted.bestMatches, correctedItems, transcript)
+        val selectedPayload = selectedMatch?.payload.orEmpty().takeIf { it.isNotBlank() && !payloadLooksRejected(it, rejected) }
+        val primary = smartDecision.payload.ifBlank { selectedPayload.orEmpty() }.ifBlank { strongestItem?.normalizedValue.orEmpty() }
+        val routineGuess = smartDecision.kind
 
         if (items.size > correctedItems.size) warnings += "One or more values sounded rejected or corrected."
         if (hasCorrectionLanguage(lowerTranscript)) warnings += "Correction language detected. Prefer the final confirmed value."
-        if (correctedItems.map { it.category }.distinct().size > 3) warnings += "Multiple categories detected. Confirm payload before publishing."
-        if (selectedMatch == null) warnings += "No active output matched yet."
+        if (primary.isBlank()) warnings += "No usable performance payload found yet."
 
-        val primary = when {
-            activeProfile.name.contains("confab", ignoreCase = true) && confabPayload.isNotBlank() -> confabPayload
-            selectedPayload.isNotBlank() && !payloadLooksRejected(selectedPayload, rejected) -> selectedPayload
-            strongestItem != null -> strongestItem.normalizedValue
-            confabPayload.isNotBlank() -> confabPayload
-            else -> ""
-        }
-
-        val backups = buildBackupPayloads(correctedItems, extracted.bestMatches, selectedPayload, confabPayload, primary)
-        val confidence = scoreConfidence(primary, selectedMatch, strongestItem, warnings, correctedItems)
-        val shouldPublish = primary.isNotBlank() && confidence >= 0.72f && warnings.none { it.contains("Confirm", ignoreCase = true) }
-        val reasoning = buildReasoning(primary, selectedMatch, strongestItem, routineGuess, warnings)
+        val backups = buildBackupPayloads(correctedItems, extracted.bestMatches, selectedPayload.orEmpty(), smartDecision.multiPayload, primary)
+        val confidence = scoreConfidence(primary, selectedMatch, strongestItem, warnings, correctedItems, smartDecision.confidence)
+        val shouldPublish = primary.isNotBlank() && confidence >= 0.68f
+        val reasoning = smartDecision.reason.ifBlank { buildReasoning(primary, selectedMatch, strongestItem, routineGuess, warnings) }
 
         return TranscriptBrainResult(
             primaryPayload = primary,
@@ -59,61 +51,125 @@ class TranscriptBrainService {
             warnings = warnings.distinct(),
             rejectedValues = rejected.map { it.normalizedValue }.distinct(),
             shouldPublish = shouldPublish,
-            emergencyRevealText = emergencyReveal(primary, routineGuess)
+            emergencyRevealText = primary
         )
     }
 
-    private fun guessRoutine(profile: PerformanceProfile, channels: List<Channel>, best: BestMatchSummary): String {
-        val profileName = profile.name.takeIf { it.isNotBlank() }
-        if (profileName != null && !profileName.equals("Custom Profile", ignoreCase = true)) return profileName
-        val channelNames = channels.map { it.name.lowercase() }
-        return when {
-            channelNames.any { it.contains("confab") } || listOf(best.place, best.name, best.date, best.objectValue, best.song).count { !it.isNullOrBlank() } >= 3 -> "Confabulation"
-            best.card != null -> "Card Reveal"
-            best.song != null || best.artist != null || best.lyric != null -> "Music Reveal"
-            best.date != null || best.birthday != null -> "Date Reveal"
-            best.serial != null -> "Serial Number Reveal"
-            best.zodiac != null -> "Zodiac Reveal"
-            best.name != null -> "Name Reveal"
-            best.objectValue != null -> "Object Reveal"
-            else -> "Word Reveal"
+    private data class SmartDecision(
+        val payload: String,
+        val multiPayload: String,
+        val kind: String,
+        val confidence: Float,
+        val reason: String
+    )
+
+    private fun decideSmartPayload(best: BestMatchSummary, items: List<DetectedItem>, transcript: String): SmartDecision {
+        val multi = buildMultiPayload(best, items)
+        if (multi.parts.size >= 2) {
+            return SmartDecision(
+                payload = multi.payload,
+                multiPayload = multi.payload,
+                kind = "Confabulation / Multi-value reveal",
+                confidence = 0.9f,
+                reason = "Multiple meaningful values were spoken, so WhisperCell bundled them into one Inject payload."
+            )
         }
+
+        best.serial?.let { return one("SERIAL", it, "Serial number reveal", 0.94f, "A serial-style value was detected and sent as the performance payload.") }
+        best.card?.let { return one("CARD", it, "Card reveal", 0.92f, "A playing card was detected and sent as the card payload.") }
+        (best.date ?: best.birthday)?.let { date ->
+            return one("DATE", date, "Date / birthday reveal", 0.88f, "A date was detected. Send the date payload so the Inject reveal app can use the appropriate date/birthday routine.")
+        }
+        best.zodiac?.let { return one("ZODIAC", it, "Astrology reveal", 0.86f, "A zodiac sign was detected and sent as an astrology payload.") }
+        best.song?.let { return one("SONG", listOfNotNull(it, best.artist?.let { artist -> "by $artist" }).joinToString(" "), "Music reveal", 0.86f, "A song or artist was detected and sent as a music payload.") }
+        best.artist?.let { return one("ARTIST", it, "Music reveal", 0.82f, "An artist was detected and sent as a music payload.") }
+        (best.name ?: best.fullConfabulationPerson())?.let { return one("NAME", it, "Name reveal", 0.82f, "A name was detected and sent as a name payload.") }
+        (best.place ?: best.country ?: best.city)?.let { return one("PLACE", it, "Place reveal", 0.8f, "A place was detected and sent as a place payload.") }
+        best.objectValue?.let { return one("OBJECT", it, "Object reveal", 0.78f, "An object was detected and sent as an object payload.") }
+        best.number?.let { return one("NUMBER", it, "Number reveal", 0.78f, "A number was detected and sent as a number payload.") }
+        best.color?.let { return one("COLOR", it, "Color reveal", 0.76f, "A color was detected and sent as a color payload.") }
+        best.phrase?.takeIf { it.isNotBlank() }?.let { return one("PHRASE", it, "Thought reveal", 0.72f, "No specific category won, so the strongest phrase was sent.") }
+        return one("TRANSCRIPT", transcript.trim().take(120), "General thought reveal", 0.55f, "No structured value was found, so WhisperCell kept the safest transcript summary.")
     }
 
-    private fun buildConfabPayload(best: BestMatchSummary): String = listOfNotNull(
-        best.place ?: best.country ?: best.city,
-        best.name,
-        best.date ?: best.birthday,
-        best.objectValue,
-        best.song ?: best.artist,
-        best.number ?: best.serial,
-        best.color,
-        best.zodiac
-    ).filter { it.isNotBlank() }.distinct().joinToString(" | ")
+    private data class MultiPayload(val payload: String, val parts: List<String>)
+
+    private fun buildMultiPayload(best: BestMatchSummary, items: List<DetectedItem>): MultiPayload {
+        val parts = listOfNotNull(
+            best.name?.prefixed("NAME"),
+            best.place?.prefixed("PLACE") ?: best.country?.prefixed("PLACE") ?: best.city?.prefixed("PLACE"),
+            (best.date ?: best.birthday)?.prefixed("DATE"),
+            best.card?.prefixed("CARD"),
+            best.serial?.prefixed("SERIAL"),
+            best.song?.let { song -> "SONG:$song${best.artist?.let { " by $it" }.orEmpty()}" },
+            best.zodiac?.prefixed("ZODIAC"),
+            best.objectValue?.prefixed("OBJECT"),
+            best.number?.prefixed("NUMBER"),
+            best.color?.prefixed("COLOR")
+        ).distinct()
+        if (parts.size >= 2) return MultiPayload(parts.joinToString(" | "), parts)
+
+        val itemParts = items
+            .filter { it.category != DetectedCategory.FullConfabulation }
+            .sortedWith(compareByDescending<DetectedItem> { it.confidence }.thenBy { it.startIndex ?: Int.MAX_VALUE })
+            .map { item -> "${labelFor(item.category)}:${item.normalizedValue}" }
+            .distinct()
+            .take(4)
+        return if (itemParts.size >= 2) MultiPayload(itemParts.joinToString(" | "), itemParts) else MultiPayload("", itemParts)
+    }
+
+    private fun one(prefix: String, value: String, kind: String, confidence: Float, reason: String): SmartDecision = SmartDecision(
+        payload = value.prefixed(prefix),
+        multiPayload = "",
+        kind = kind,
+        confidence = confidence,
+        reason = reason
+    )
+
+    private fun String.prefixed(prefix: String): String = "$prefix:${trim()}"
+
+    private fun BestMatchSummary.fullConfabulationPerson(): String? = fullConfabulation
+        ?.split("|")
+        ?.map { it.trim() }
+        ?.firstOrNull { it.split(" ").size in 2..3 }
+
+    private fun labelFor(category: DetectedCategory): String = when (category) {
+        DetectedCategory.PlayingCard -> "CARD"
+        DetectedCategory.SerialNumber -> "SERIAL"
+        DetectedCategory.Date, DetectedCategory.Birthday -> "DATE"
+        DetectedCategory.Zodiac -> "ZODIAC"
+        DetectedCategory.Song -> "SONG"
+        DetectedCategory.Artist -> "ARTIST"
+        DetectedCategory.Name, DetectedCategory.Celebrity -> "NAME"
+        DetectedCategory.Place, DetectedCategory.Country, DetectedCategory.City -> "PLACE"
+        DetectedCategory.Object -> "OBJECT"
+        DetectedCategory.Number -> "NUMBER"
+        DetectedCategory.Color -> "COLOR"
+        else -> category.label.uppercase().replace(" ", "_")
+    }
 
     private fun buildBackupPayloads(
         items: List<DetectedItem>,
         best: BestMatchSummary,
         selectedPayload: String,
-        confabPayload: String,
+        multiPayload: String,
         primary: String
     ): List<String> {
         val fromBest = listOfNotNull(
-            best.word,
-            best.phrase,
-            best.place,
-            best.name,
-            best.date,
-            best.card,
-            best.song,
-            best.artist,
-            best.serial,
-            best.objectValue,
-            best.zodiac,
-            best.fullConfabulation
+            best.fullConfabulation,
+            best.card?.prefixed("CARD"),
+            best.serial?.prefixed("SERIAL"),
+            (best.date ?: best.birthday)?.prefixed("DATE"),
+            best.zodiac?.prefixed("ZODIAC"),
+            best.song?.prefixed("SONG"),
+            best.name?.prefixed("NAME"),
+            best.place?.prefixed("PLACE"),
+            best.objectValue?.prefixed("OBJECT"),
+            best.number?.prefixed("NUMBER"),
+            best.phrase
         )
-        val fromItems = items.sortedByDescending { it.confidence }.map { it.normalizedValue }
-        return (listOf(selectedPayload, confabPayload) + fromBest + fromItems)
+        val fromItems = items.sortedByDescending { it.confidence }.map { "${labelFor(it.category)}:${it.normalizedValue}" }
+        return (listOf(selectedPayload, multiPayload) + fromBest + fromItems)
             .map { it.trim() }
             .filter { it.isNotBlank() && it != primary }
             .distinct()
@@ -125,16 +181,14 @@ class TranscriptBrainService {
         selectedMatch: ChannelMatch?,
         strongestItem: DetectedItem?,
         warnings: List<String>,
-        items: List<DetectedItem>
+        items: List<DetectedItem>,
+        smartConfidence: Float
     ): Float {
         if (primary.isBlank()) return 0f
-        var score = max(selectedMatch?.confidence ?: 0f, strongestItem?.confidence ?: 0f)
+        var score = max(max(selectedMatch?.confidence ?: 0f, strongestItem?.confidence ?: 0f), smartConfidence)
         if (score == 0f && items.isNotEmpty()) score = items.maxOf { it.confidence }
-        if (selectedMatch != null) score += 0.08f
-        if (items.size == 1) score += 0.05f
-        if (warnings.any { it.contains("Correction", ignoreCase = true) }) score -= 0.08f
-        if (warnings.any { it.contains("Multiple", ignoreCase = true) }) score -= 0.06f
-        if (warnings.any { it.contains("No active output", ignoreCase = true) }) score -= 0.12f
+        if (items.size == 1) score += 0.03f
+        if (warnings.any { it.contains("Correction", ignoreCase = true) }) score -= 0.06f
         return score.coerceIn(0f, 1f)
     }
 
@@ -146,19 +200,10 @@ class TranscriptBrainService {
         warnings: List<String>
     ): String = when {
         primary.isBlank() -> "The transcript did not produce a safe payload yet."
-        selectedMatch != null -> "Best match for $routineGuess came from ${selectedMatch.channel.name}: $primary."
-        strongestItem != null -> "No channel match was selected, so the strongest detected value was used: ${strongestItem.category.label}."
+        selectedMatch != null -> "WhisperCell selected a $routineGuess payload for Inject."
+        strongestItem != null -> "WhisperCell selected the strongest detected value: ${strongestItem.category.label}."
         warnings.isNotEmpty() -> "A payload was found, but warnings require review before publishing."
         else -> "A clear payload was found for $routineGuess."
-    }
-
-    private fun emergencyReveal(primary: String, routineGuess: String): String = when {
-        primary.isBlank() -> "Keep one clear image in mind."
-        routineGuess.contains("date", ignoreCase = true) -> "$primary feels like a date worth remembering."
-        routineGuess.contains("card", ignoreCase = true) -> "Some symbols wait until the right moment to be seen: $primary."
-        routineGuess.contains("music", ignoreCase = true) -> "Some songs begin before anyone says the title: $primary."
-        routineGuess.contains("confab", ignoreCase = true) -> "The thought has assembled itself: $primary."
-        else -> "Today’s focus is $primary."
     }
 
     private fun findRejectedValues(items: List<DetectedItem>, lowerTranscript: String): List<DetectedItem> = items.filter { item ->
