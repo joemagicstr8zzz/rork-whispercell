@@ -6,6 +6,8 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import androidx.core.content.ContextCompat
 import com.rork.whispercell.models.RecordedAudioChunk
 import kotlinx.coroutines.CoroutineScope
@@ -27,6 +29,8 @@ class NativeAudioRecorder(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var recordJob: Job? = null
     private var audioRecord: AudioRecord? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
     private var sequence: Int = 0
     private var chunkCallback: suspend (RecordedAudioChunk) -> Unit = {}
     private var errorCallback: (String) -> Unit = {}
@@ -62,6 +66,7 @@ class NativeAudioRecorder(
         }
 
         audioRecord = recorder
+        attachAudioEffects(recorder.audioSessionId)
         sequence = 0
         recorder.startRecording()
 
@@ -100,6 +105,7 @@ class NativeAudioRecorder(
         recordJob?.cancel()
         recordJob = null
         runCatching { audioRecord?.stop() }
+        releaseAudioEffects()
         audioRecord?.release()
         audioRecord = null
     }
@@ -107,6 +113,18 @@ class NativeAudioRecorder(
     fun release() {
         stop()
         scope.cancel()
+    }
+
+    private fun attachAudioEffects(audioSessionId: Int) {
+        noiseSuppressor = if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(audioSessionId)?.apply { enabled = true } else null
+        echoCanceler = if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(audioSessionId)?.apply { enabled = true } else null
+    }
+
+    private fun releaseAudioEffects() {
+        noiseSuppressor?.release()
+        echoCanceler?.release()
+        noiseSuppressor = null
+        echoCanceler = null
     }
 
     private fun calculateRms(pcmBytes: ByteArray): Float {
