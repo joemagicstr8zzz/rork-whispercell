@@ -13,8 +13,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,10 +24,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Alarm
 import androidx.compose.material.icons.outlined.Archive
@@ -49,10 +45,7 @@ import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Upload
-import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -74,6 +67,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -87,6 +81,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
+import com.joemagicstr8zzz.screenvault.data.AdvancedImageAnalyzer
 import com.joemagicstr8zzz.screenvault.data.MediaScanner
 import com.joemagicstr8zzz.screenvault.data.SampleData
 import com.joemagicstr8zzz.screenvault.data.ScreenVaultRepository
@@ -96,6 +91,7 @@ import com.joemagicstr8zzz.screenvault.model.ScreenVaultSettings
 import com.joemagicstr8zzz.screenvault.model.ScreenshotCategory
 import com.joemagicstr8zzz.screenvault.model.ScreenshotItem
 import com.joemagicstr8zzz.screenvault.model.ScreenshotStatus
+import kotlinx.coroutines.launch
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.text.SimpleDateFormat
@@ -120,9 +116,11 @@ enum class ScreenVaultTab(val label: String, val icon: ImageVector) {
     Settings("Settings", Icons.Outlined.Settings)
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ScreenVaultApp(repository: ScreenVaultRepository) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var items by remember { mutableStateOf(repository.loadItems()) }
     var settings by remember { mutableStateOf(repository.loadSettings()) }
     var tab by remember { mutableStateOf(ScreenVaultTab.Inbox) }
@@ -131,15 +129,9 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
     var manualOpen by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
 
-    fun saveItems(next: List<ScreenshotItem>) {
-        items = next
-        repository.saveItems(next)
-    }
-
-    fun saveSettings(next: ScreenVaultSettings) {
-        settings = next
-        repository.saveSettings(next)
-    }
+    fun saveItems(next: List<ScreenshotItem>) { items = next; repository.saveItems(next) }
+    fun saveSettings(next: ScreenVaultSettings) { settings = next; repository.saveSettings(next) }
+    fun useOpenAi(): Boolean = settings.cloudAiProcessing && settings.openAiApiKey.isNotBlank()
 
     fun upsert(item: ScreenshotItem) {
         saveItems(if (items.any { it.id == item.id }) items.map { if (it.id == item.id) item else it } else listOf(item) + items)
@@ -152,10 +144,25 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
     }
 
     fun runScan() {
-        val found = MediaScanner.scanRecentScreenshots(context, items.map { it.imageUri }.toSet())
-        if (found.isNotEmpty()) saveItems(found + items)
-        message = if (found.isEmpty()) "No new screenshots found. Manual import and paste still work." else "Found ${found.size} screenshot${if (found.size == 1) "" else "s"} to review."
-        saveSettings(settings.copy(lastScanAt = System.currentTimeMillis()))
+        scope.launch {
+            message = if (useOpenAi()) "Scanning screenshots with OCR, barcode detection, and OpenAI vision..." else "Scanning screenshots with on-device OCR and barcode detection..."
+            val found = runCatching {
+                MediaScanner.scanRecentScreenshots(
+                    context = context,
+                    knownUris = items.map { it.imageUri }.toSet(),
+                    openAiApiKey = settings.openAiApiKey,
+                    openAiModel = settings.openAiModel,
+                    useOpenAi = useOpenAi()
+                )
+            }.getOrElse { error ->
+                message = "Scan failed: ${error.message ?: "unknown error"}"
+                emptyList()
+            }
+            if (found.isNotEmpty()) saveItems(found + items)
+            if (found.isNotEmpty()) message = "Analyzed ${found.size} screenshot${if (found.size == 1) "" else "s"}."
+            if (found.isEmpty() && message?.startsWith("Scan failed") != true) message = "No new screenshots found. Manual import and paste still work."
+            saveSettings(settings.copy(lastScanAt = System.currentTimeMillis()))
+        }
     }
 
     val imagePermission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -165,11 +172,22 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
 
     val pickImageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
         uri?.let {
-            reviewItem = ScreenshotAnalyzer.analyze(
-                imageUri = it.toString(),
-                sourceType = "photo",
-                visibleText = ""
-            )
+            scope.launch {
+                message = if (useOpenAi()) "Analyzing image with OCR, barcode detection, and OpenAI vision..." else "Analyzing image with on-device OCR and barcode detection..."
+                reviewItem = runCatching {
+                    AdvancedImageAnalyzer.analyzeImage(
+                        context = context,
+                        imageUri = it.toString(),
+                        sourceType = "photo",
+                        openAiApiKey = settings.openAiApiKey,
+                        openAiModel = settings.openAiModel,
+                        useOpenAi = useOpenAi()
+                    )
+                }.getOrElse { error ->
+                    message = "Image analysis failed: ${error.message ?: "unknown error"}"
+                    ScreenshotAnalyzer.analyze(imageUri = it.toString(), sourceType = "photo", visibleText = "")
+                }
+            }
         }
     }
 
@@ -236,6 +254,7 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
                 ScreenVaultTab.Inbox -> InboxScreen(
                     items = items.filter { it.status == ScreenshotStatus.Inbox },
                     message = message,
+                    openAiEnabled = useOpenAi(),
                     onScan = {
                         if (ContextCompat.checkSelfPermission(context, imagePermission) == PackageManager.PERMISSION_GRANTED) runScan()
                         else permissionLauncher.launch(imagePermission)
@@ -253,10 +272,7 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
                     onDone = { id -> patch(id) { copy(status = ScreenshotStatus.Done, updatedAt = System.currentTimeMillis()) } },
                     onSnooze = { id -> patch(id) { copy(status = ScreenshotStatus.Snoozed, reminderAt = System.currentTimeMillis() + 86400000L, updatedAt = System.currentTimeMillis()) } }
                 )
-                ScreenVaultTab.Vault -> VaultScreen(
-                    items = items.filterNot { it.status == ScreenshotStatus.Inbox || it.status == ScreenshotStatus.Ignored },
-                    onOpen = { detailItem = it }
-                )
+                ScreenVaultTab.Vault -> VaultScreen(items = items.filterNot { it.status == ScreenshotStatus.Inbox || it.status == ScreenshotStatus.Ignored }, onOpen = { detailItem = it })
                 ScreenVaultTab.Reports -> ReportsScreen(items = items)
                 ScreenVaultTab.Settings -> SettingsScreen(
                     settings = settings,
@@ -272,10 +288,7 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
 
 @Composable
 private fun OnboardingScreen(onDone: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().background(Bg).padding(28.dp),
-        verticalArrangement = Arrangement.Center
-    ) {
+    Column(modifier = Modifier.fillMaxSize().background(Bg).padding(28.dp), verticalArrangement = Arrangement.Center) {
         Icon(Icons.Outlined.Image, contentDescription = null, tint = Blue, modifier = Modifier.size(86.dp))
         Spacer(Modifier.height(24.dp))
         Text("ScreenVault", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Black, color = TextColor)
@@ -283,7 +296,7 @@ private fun OnboardingScreen(onDone: () -> Unit) {
         Spacer(Modifier.height(28.dp))
         Text("Your screenshots are a memory bank.", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black, color = TextColor)
         Spacer(Modifier.height(12.dp))
-        Text("Receipts, orders, ideas, links, QR codes, reminders, confirmations, and things you meant to revisit often get buried. ScreenVault organizes screenshots you choose to scan.", color = Muted, lineHeight = MaterialTheme.typography.bodyLarge.lineHeight)
+        Text("ScreenVault uses advanced on-device OCR, barcode detection, and optional AI vision to organize screenshots you choose to scan.", color = Muted)
         Spacer(Modifier.height(28.dp))
         Button(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Start Organizing") }
     }
@@ -291,11 +304,7 @@ private fun OnboardingScreen(onDone: () -> Unit) {
 
 @Composable
 private fun Page(title: String, subtitle: String, content: @Composable () -> Unit) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().background(Bg),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
+    LazyColumn(modifier = Modifier.fillMaxSize().background(Bg), contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Text("ScreenVault", color = Blue, fontWeight = FontWeight.Black, style = MaterialTheme.typography.titleLarge)
             Text("Smart Screenshot Organizer", color = Muted, style = MaterialTheme.typography.labelMedium)
@@ -312,6 +321,7 @@ private fun Page(title: String, subtitle: String, content: @Composable () -> Uni
 private fun InboxScreen(
     items: List<ScreenshotItem>,
     message: String?,
+    openAiEnabled: Boolean,
     onScan: () -> Unit,
     onImport: () -> Unit,
     onPaste: () -> Unit,
@@ -322,6 +332,7 @@ private fun InboxScreen(
 ) {
     Page("Screenshot Inbox", "New screenshots and images waiting to be understood.") {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            InfoBox(if (openAiEnabled) "Advanced mode: multilingual OCR + QR/barcode detection + OpenAI vision." else "Local mode: bundled multilingual OCR + QR/barcode detection. Enable OpenAI Vision in Settings for cloud AI sorting.")
             Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Search, null); Spacer(Modifier.width(8.dp)); Text("Scan New Screenshots") }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) { Text("Import Image") }
@@ -394,10 +405,12 @@ private fun SettingsScreen(settings: ScreenVaultSettings, itemCount: Int, onSett
     if (confirmClear) AlertDialog(onDismissRequest = { confirmClear = false }, confirmButton = { TextButton(onClick = { confirmClear = false; onClear() }) { Text("Clear") } }, dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } }, title = { Text("Clear local data?") }, text = { Text("This removes ScreenVault records only. It does not delete original photos.") })
     Page("Settings", "Control your data, privacy, and scanning.") {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            ToggleRow("Local-only processing", "Keep analysis on this device by default.", settings.localOnlyProcessing) { onSettings(settings.copy(localOnlyProcessing = it)) }
-            ToggleRow("Cloud AI processing", "Optional advanced analysis. Off by default.", settings.cloudAiProcessing) { onSettings(settings.copy(cloudAiProcessing = it)) }
+            ToggleRow("Local-only processing", "Keep analysis on this device by default. Turn this off if you use cloud AI.", settings.localOnlyProcessing) { onSettings(settings.copy(localOnlyProcessing = it, cloudAiProcessing = if (it) false else settings.cloudAiProcessing)) }
+            ToggleRow("OpenAI Vision enrichment", "Optional cloud AI for smarter image understanding. Requires your API key.", settings.cloudAiProcessing) { onSettings(settings.copy(cloudAiProcessing = it, localOnlyProcessing = if (it) false else settings.localOnlyProcessing)) }
+            EditableField("OpenAI API key", settings.openAiApiKey, minLines = 1) { onSettings(settings.copy(openAiApiKey = it.trim())) }
+            EditableField("OpenAI model", settings.openAiModel, minLines = 1) { onSettings(settings.copy(openAiModel = it.ifBlank { "gpt-5.5" })) }
             ToggleRow("Hide sensitive screenshots", "Blur sensitive items in lists later.", settings.hideSensitiveScreenshots) { onSettings(settings.copy(hideSensitiveScreenshots = it)) }
-            ToggleRow("Scan on app open", "Future native feature. Manual scan works now.", settings.scanOnOpen) { onSettings(settings.copy(scanOnOpen = it)) }
+            ToggleRow("Scan on app open", "Future native background feature. Manual scan works now.", settings.scanOnOpen) { onSettings(settings.copy(scanOnOpen = it)) }
             InfoBox("$itemCount local records. Last scan: ${settings.lastScanAt?.let { shortDate(it) } ?: "Never"}.")
             OutlinedButton(onClick = onSamples, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Add Sample Records") }
             OutlinedButton(onClick = { onSettings(settings.copy(onboardingComplete = false)) }, modifier = Modifier.fillMaxWidth()) { Text("Reset Onboarding") }
@@ -414,7 +427,7 @@ private fun ReviewScreen(item: ScreenshotItem, onBack: () -> Unit, onSave: (Scre
         item {
             IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, null) }
             Text("Review Screenshot", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-            if (text.isBlank()) InfoBox("OCR is not wired into this MVP yet. Paste the visible screenshot text below, then tap Analyze Text Again.")
+            if (text.isBlank()) InfoBox("No text was extracted. You can paste visible text here, or enable OpenAI Vision in Settings and re-import the image.")
             if (draft.isSensitive) InfoBox("This may contain sensitive information. Review before saving or exporting.")
             EditableField("Title", draft.title) { draft = draft.copy(title = it) }
             EditableField("Summary", draft.summary) { draft = draft.copy(summary = it) }
@@ -453,6 +466,7 @@ private fun DetailScreen(item: ScreenshotItem, onBack: () -> Unit, onEdit: (Scre
                 DataRow("Links", item.detectedLinks.joinToString("\n") { it.url }.ifBlank { "None" })
                 DataRow("Codes", item.detectedCodes.joinToString("\n") { "${it.type}: ${it.value}" }.ifBlank { "None" })
                 DataRow("Original text", item.extractedText.ifBlank { "No text stored yet." })
+                if (item.userNotes.isNotBlank()) DataRow("Analysis notes", item.userNotes)
             }
             Button(onClick = { onPatch(item.copy(status = ScreenshotStatus.Done, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.CheckCircle, null); Spacer(Modifier.width(8.dp)); Text("Mark Complete") }
             OutlinedButton(onClick = { onPatch(item.copy(status = ScreenshotStatus.Snoozed, reminderAt = System.currentTimeMillis() + 86400000L, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Snooze Tomorrow") }
@@ -497,9 +511,7 @@ private fun ItemCard(item: ScreenshotItem, a: String, onA: () -> Unit, b: String
 
 @Composable
 private fun AppCard(content: @Composable () -> Unit) {
-    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() }
-    }
+    Card(colors = CardDefaults.cardColors(containerColor = Surface), shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { content() } }
 }
 
 @Composable
@@ -513,12 +525,7 @@ private fun ItemImage(item: ScreenshotItem) {
 
 @Composable
 private fun ItemIcon(category: ScreenshotCategory, size: androidx.compose.ui.unit.Dp = 58.dp) {
-    val icon = when (category) {
-        ScreenshotCategory.Receipt -> Icons.Outlined.Receipt
-        ScreenshotCategory.QrBarcode -> Icons.Outlined.QrCode
-        ScreenshotCategory.DocumentForm -> Icons.Outlined.Description
-        else -> Icons.Outlined.Image
-    }
+    val icon = when (category) { ScreenshotCategory.Receipt -> Icons.Outlined.Receipt; ScreenshotCategory.QrBarcode -> Icons.Outlined.QrCode; ScreenshotCategory.DocumentForm -> Icons.Outlined.Description; else -> Icons.Outlined.Image }
     Box(Modifier.size(size).clip(RoundedCornerShape(16.dp)).background(Color(0xFFDBEAFE)), contentAlignment = Alignment.Center) { Icon(icon, contentDescription = category.label, tint = Blue) }
 }
 
