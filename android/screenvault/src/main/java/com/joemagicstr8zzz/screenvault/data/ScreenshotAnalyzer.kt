@@ -57,8 +57,9 @@ object ScreenshotAnalyzer {
         val source = inferSource(text, sourceHint)
         val category = inferCategory(text, codes)
         val priority = inferPriority(text, category, dates)
-        val isReceipt = category == ScreenshotCategory.Receipt || text.lowercase().containsAny("receipt", "invoice", "subtotal", "total")
-        val isTax = text.lowercase().containsAny("tax", "deductible", "business expense", "work expense", "reimbursement")
+        val lowered = text.lowercase()
+        val isReceipt = category == ScreenshotCategory.Receipt || lowered.containsAny("receipt", "invoice", "subtotal", "total")
+        val isTax = lowered.containsAny("tax", "deductible", "business expense", "work expense", "reimbursement")
         val sensitive = detectSensitive(text)
         val orderInfo = inferOrderInfo(text, codes, dates, source)
         val dueDateText = dates.firstOrNull { it.dateType in listOf("return_by", "due", "appointment", "renewal") }?.rawText
@@ -132,8 +133,8 @@ object ScreenshotAnalyzer {
         return regex.findAll(text).map { match ->
             val raw = match.value
             val currency = when {
-                raw.contains("¥") || raw.contains("yen", true) || raw.contains("jpy", true) -> "JPY"
-                raw.contains("$") || raw.contains("usd", true) -> "USD"
+                raw.contains('¥') || raw.contains("yen", true) || raw.contains("jpy", true) -> "JPY"
+                raw.contains('$') || raw.contains("usd", true) -> "USD"
                 else -> null
             }
             val amount = raw.replace(Regex("[^0-9.]"), "").toDoubleOrNull()
