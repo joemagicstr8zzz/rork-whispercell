@@ -20,10 +20,9 @@ data class PerformanceUiState(
     val lastInjectUrl: String = "",
     val injectStatus: InjectStatus = InjectStatus.Ready,
     val logs: List<LogEntry> = emptyList(),
-    val mockTranscriptInput: String = "I want to go to Spain and meet Tom Cruise on June 2nd, 2035.",
     val isListeningVisible: Boolean = false,
-    val providerActivity: String = "Mock Transcript Mode ready. Live microphone transcription requires a native provider/device handoff.",
-    val aiActivity: String = "GPT not run yet. Rule fallback ready.",
-    val notificationState: String = "No background session",
+    val providerActivity: String = "Native Recorder ready. Tap Start Recording to begin capture.",
+    val aiActivity: String = "Waiting for recording.",
+    val notificationState: String = "No recording session",
     val errorMessage: String? = null
 )
