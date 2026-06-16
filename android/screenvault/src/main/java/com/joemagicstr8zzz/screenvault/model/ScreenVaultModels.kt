@@ -151,5 +151,7 @@ data class ScreenVaultSettings(
     val hideSensitiveScreenshots: Boolean = true,
     val confirmSensitiveSaves: Boolean = true,
     val scanOnOpen: Boolean = false,
-    val lastScanAt: Long? = null
+    val lastScanAt: Long? = null,
+    val openAiApiKey: String = "",
+    val openAiModel: String = "gpt-5.5"
 )
