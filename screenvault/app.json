@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "ScreenVault",
+    "slug": "screenvault",
+    "scheme": "screenvault",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "ScreenVault uses photo access only to scan screenshots you choose to organize.",
+        "NSPhotoLibraryAddUsageDescription": "ScreenVault can save exports if you choose to export records."
+      }
+    },
+    "android": {
+      "package": "com.joemagicstr8zzz.screenvault",
+      "permissions": [
+        "READ_MEDIA_IMAGES",
+        "READ_EXTERNAL_STORAGE",
+        "POST_NOTIFICATIONS"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#2563EB"
+      }
+    },
+    "plugins": [
+      "expo-image-picker",
+      "expo-media-library",
+      "expo-notifications"
+    ]
+  }
+}
