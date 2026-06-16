@@ -153,5 +153,6 @@ data class ScreenVaultSettings(
     val scanOnOpen: Boolean = false,
     val lastScanAt: Long? = null,
     val openAiApiKey: String = "",
-    val openAiModel: String = "gpt-5.5"
+    val openAiModel: String = "gpt-5.5",
+    val showRawExtractedText: Boolean = false
 )
