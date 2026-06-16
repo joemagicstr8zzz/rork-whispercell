@@ -1,0 +1,29 @@
+{
+  "name": "screenvault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ScreenVault: a smart screenshot organizer for receipts, orders, reminders, links, QR codes, and records.",
+  "main": "App.tsx",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "latest",
+    "@react-native-async-storage/async-storage": "latest",
+    "expo": "latest",
+    "expo-image-picker": "latest",
+    "expo-media-library": "latest",
+    "expo-notifications": "latest",
+    "expo-status-bar": "latest",
+    "react": "latest",
+    "react-native": "latest"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "typescript": "latest"
+  }
+}
