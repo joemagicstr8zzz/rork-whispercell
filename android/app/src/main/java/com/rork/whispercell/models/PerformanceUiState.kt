@@ -20,6 +20,7 @@ data class PerformanceUiState(
     val lastInjectUrl: String = "",
     val injectStatus: InjectStatus = InjectStatus.Ready,
     val logs: List<LogEntry> = emptyList(),
+    val mockTranscriptInput: String = "I want to go to Spain and meet Tom Cruise on June 2nd, 2035.",
     val isListeningVisible: Boolean = false,
     val providerActivity: String = "Native Recorder ready. Tap Start Recording to begin capture.",
     val aiActivity: String = "Waiting for recording.",
