@@ -212,6 +212,7 @@ fun ScreenVaultApp(repository: ScreenVaultRepository) {
     detailItem?.let { item ->
         DetailScreen(
             item = items.firstOrNull { it.id == item.id } ?: item,
+            showRawExtractedText = settings.showRawExtractedText,
             onBack = { detailItem = null },
             onEdit = { reviewItem = it },
             onPatch = { changed -> upsert(changed) },
@@ -410,6 +411,7 @@ private fun SettingsScreen(settings: ScreenVaultSettings, itemCount: Int, onSett
             EditableField("OpenAI API key", settings.openAiApiKey, minLines = 1) { onSettings(settings.copy(openAiApiKey = it.trim())) }
             EditableField("OpenAI model", settings.openAiModel, minLines = 1) { onSettings(settings.copy(openAiModel = it.ifBlank { "gpt-5.5" })) }
             ToggleRow("Hide sensitive screenshots", "Blur sensitive items in lists later.", settings.hideSensitiveScreenshots) { onSettings(settings.copy(hideSensitiveScreenshots = it)) }
+            ToggleRow("Show raw extracted text", "Off by default. Turn on only when you want to inspect messy OCR output.", settings.showRawExtractedText) { onSettings(settings.copy(showRawExtractedText = it)) }
             ToggleRow("Scan on app open", "Future native background feature. Manual scan works now.", settings.scanOnOpen) { onSettings(settings.copy(scanOnOpen = it)) }
             InfoBox("$itemCount local records. Last scan: ${settings.lastScanAt?.let { shortDate(it) } ?: "Never"}.")
             OutlinedButton(onClick = onSamples, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.Refresh, null); Spacer(Modifier.width(8.dp)); Text("Add Sample Records") }
@@ -427,7 +429,7 @@ private fun ReviewScreen(item: ScreenshotItem, onBack: () -> Unit, onSave: (Scre
         item {
             IconButton(onClick = onBack) { Icon(Icons.Outlined.ArrowBack, null) }
             Text("Review Screenshot", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-            if (text.isBlank()) InfoBox("No text was extracted. You can paste visible text here, or enable OpenAI Vision in Settings and re-import the image.")
+            if (text.isBlank()) InfoBox("No useful text was extracted. You can add context here, or enable OpenAI Vision in Settings and re-import the image.")
             if (draft.isSensitive) InfoBox("This may contain sensitive information. Review before saving or exporting.")
             EditableField("Title", draft.title) { draft = draft.copy(title = it) }
             EditableField("Summary", draft.summary) { draft = draft.copy(summary = it) }
@@ -435,21 +437,21 @@ private fun ReviewScreen(item: ScreenshotItem, onBack: () -> Unit, onSave: (Scre
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(ScreenshotCategory.entries) { cat -> FilterChip(selected = draft.category == cat, onClick = { draft = draft.copy(category = cat) }, label = { Text(cat.label) }) } }
             SectionTitle("Priority")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Priority.entries.forEach { p -> FilterChip(selected = draft.priority == p, onClick = { draft = draft.copy(priority = p) }, label = { Text(p.label) }) } }
-            EditableField("Visible / extracted text", text, minLines = 6) { text = it }
+            EditableField("Analysis text / context", text, minLines = 6) { text = it }
             OutlinedButton(onClick = { draft = ScreenshotAnalyzer.reanalyze(draft, text) }, modifier = Modifier.fillMaxWidth()) { Text("Analyze Text Again") }
             EditableField("Suggested action", draft.suggestedAction.orEmpty()) { draft = draft.copy(suggestedAction = it) }
             EditableField("Due date / reminder text", draft.dueDateText.orEmpty()) { draft = draft.copy(dueDateText = it.ifBlank { null }) }
             ToggleRow("Receipt", "Include in receipt reports.", draft.isReceipt) { draft = draft.copy(isReceipt = it) }
             ToggleRow("Tax / record", "Flag for report review.", draft.isTaxRecord) { draft = draft.copy(isTaxRecord = it) }
-            Button(onClick = { onSave(draft.copy(extractedText = text, status = if (draft.status == ScreenshotStatus.Action) ScreenshotStatus.Action else ScreenshotStatus.Saved, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Save to Vault") }
-            OutlinedButton(onClick = { onSave(draft.copy(extractedText = text, status = ScreenshotStatus.Action, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Add to Action Queue") }
-            OutlinedButton(onClick = { onSave(draft.copy(extractedText = text, status = ScreenshotStatus.Ignored, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Ignore") }
+            Button(onClick = { onSave(draft.copy(extractedText = ScreenshotAnalyzer.cleanOcrText(text), status = if (draft.status == ScreenshotStatus.Action) ScreenshotStatus.Action else ScreenshotStatus.Saved, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Save to Vault") }
+            OutlinedButton(onClick = { onSave(draft.copy(extractedText = ScreenshotAnalyzer.cleanOcrText(text), status = ScreenshotStatus.Action, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Add to Action Queue") }
+            OutlinedButton(onClick = { onSave(draft.copy(extractedText = ScreenshotAnalyzer.cleanOcrText(text), status = ScreenshotStatus.Ignored, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Ignore") }
         }
     }
 }
 
 @Composable
-private fun DetailScreen(item: ScreenshotItem, onBack: () -> Unit, onEdit: (ScreenshotItem) -> Unit, onPatch: (ScreenshotItem) -> Unit, onDelete: (String) -> Unit) {
+private fun DetailScreen(item: ScreenshotItem, showRawExtractedText: Boolean, onBack: () -> Unit, onEdit: (ScreenshotItem) -> Unit, onPatch: (ScreenshotItem) -> Unit, onDelete: (String) -> Unit) {
     var confirmDelete by remember { mutableStateOf(false) }
     if (confirmDelete) AlertDialog(onDismissRequest = { confirmDelete = false }, confirmButton = { TextButton(onClick = { confirmDelete = false; onDelete(item.id) }) { Text("Delete") } }, dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } }, title = { Text("Delete record?") }, text = { Text("This deletes only the ScreenVault record. It does not delete the original image.") })
     LazyColumn(Modifier.fillMaxSize().background(Bg), contentPadding = androidx.compose.foundation.layout.PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -459,15 +461,19 @@ private fun DetailScreen(item: ScreenshotItem, onBack: () -> Unit, onEdit: (Scre
             AppCard {
                 BadgeRow(item)
                 DataRow("Summary", item.summary)
-                DataRow("Suggested action", item.suggestedAction.orEmpty())
+                if (!item.suggestedAction.isNullOrBlank()) DataRow("Recommended action", item.suggestedAction)
                 DataRow("Due / reminder", item.dueDateText ?: item.reminderAt?.let { shortDate(it) } ?: "None")
-                DataRow("Amounts", item.detectedAmounts.joinToString { it.rawText }.ifBlank { "None" })
-                DataRow("Dates", item.detectedDates.joinToString { it.rawText }.ifBlank { "None" })
-                DataRow("Links", item.detectedLinks.joinToString("\n") { it.url }.ifBlank { "None" })
-                DataRow("Codes", item.detectedCodes.joinToString("\n") { "${it.type}: ${it.value}" }.ifBlank { "None" })
-                DataRow("Original text", item.extractedText.ifBlank { "No text stored yet." })
-                if (item.userNotes.isNotBlank()) DataRow("Analysis notes", item.userNotes)
+                DataRow("Source", item.sourceSite ?: item.sourceApp ?: item.sourceType)
+                DataRow("Confidence", item.confidence.label)
             }
+            ImportantDetailsCard(item)
+            if (showRawExtractedText) {
+                AppCard {
+                    Text("Raw extracted text", fontWeight = FontWeight.Bold, color = TextColor)
+                    Text(item.extractedText.ifBlank { "No text stored." }, color = Muted)
+                }
+            }
+            if (item.userNotes.isNotBlank()) AppCard { DataRow("Analysis notes", item.userNotes) }
             Button(onClick = { onPatch(item.copy(status = ScreenshotStatus.Done, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Outlined.CheckCircle, null); Spacer(Modifier.width(8.dp)); Text("Mark Complete") }
             OutlinedButton(onClick = { onPatch(item.copy(status = ScreenshotStatus.Snoozed, reminderAt = System.currentTimeMillis() + 86400000L, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Snooze Tomorrow") }
             OutlinedButton(onClick = { onPatch(item.copy(status = ScreenshotStatus.Archived, updatedAt = System.currentTimeMillis())) }, modifier = Modifier.fillMaxWidth()) { Text("Archive") }
@@ -477,12 +483,33 @@ private fun DetailScreen(item: ScreenshotItem, onBack: () -> Unit, onEdit: (Scre
 }
 
 @Composable
+private fun ImportantDetailsCard(item: ScreenshotItem) {
+    val amountText = item.detectedAmounts.joinToString { it.rawText }
+    val dateText = item.detectedDates.joinToString { if (it.dateType != "unknown") "${it.rawText} (${it.dateType.replace('_', ' ')})" else it.rawText }
+    val linkText = item.detectedLinks.joinToString("\n") { it.url }
+    val codeText = item.detectedCodes.joinToString("\n") { "${it.type}: ${it.value}" }
+    val order = item.detectedOrderInfo
+    AppCard {
+        Text("What matters", fontWeight = FontWeight.Black, color = TextColor)
+        if (amountText.isNotBlank()) DataRow("Money", amountText)
+        if (dateText.isNotBlank()) DataRow("Dates", dateText)
+        if (!order?.vendor.isNullOrBlank()) DataRow("Vendor", order?.vendor.orEmpty())
+        if (!order?.orderNumber.isNullOrBlank()) DataRow("Order number", order?.orderNumber.orEmpty())
+        if (!order?.trackingNumber.isNullOrBlank()) DataRow("Tracking", order?.trackingNumber.orEmpty())
+        if (linkText.isNotBlank()) DataRow("Links", linkText)
+        if (codeText.isNotBlank()) DataRow("Codes", codeText)
+        if (item.tags.isNotEmpty()) DataRow("Tags", item.tags.joinToString(", "))
+        if (amountText.isBlank() && dateText.isBlank() && linkText.isBlank() && codeText.isBlank() && order?.vendor.isNullOrBlank()) Text("No strong details extracted yet. Add context from Review if this screenshot matters.", color = Muted)
+    }
+}
+
+@Composable
 private fun ManualPasteDialog(onDismiss: () -> Unit, onAnalyze: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Paste Screenshot Text") },
-        text = { OutlinedTextField(value = text, onValueChange = { text = it }, minLines = 6, label = { Text("Visible text") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)) },
+        text = { OutlinedTextField(value = text, onValueChange = { text = it }, minLines = 6, label = { Text("Visible text or context") }, keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences)) },
         confirmButton = { TextButton(onClick = { if (text.isNotBlank()) onAnalyze(text) }) { Text("Analyze") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )
