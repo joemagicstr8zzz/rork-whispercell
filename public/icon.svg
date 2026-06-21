@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Speed Reader 3D icon</title>
+  <desc id="desc">A glowing reading tunnel with a focused center word marker.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#101426"/>
+      <stop offset="0.52" stop-color="#090b16"/>
+      <stop offset="1" stop-color="#1d1238"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#7cf7ff"/>
+      <stop offset="0.55" stop-color="#ad7cff"/>
+      <stop offset="1" stop-color="#fff27c"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <g fill="none" stroke="url(#beam)" stroke-width="14" filter="url(#glow)" opacity="0.85">
+    <path d="M88 258c47-92 94-138 168-138s121 46 168 138c-47 92-94 138-168 138S135 350 88 258Z" opacity="0.38"/>
+    <path d="M136 258c36-60 72-90 120-90s84 30 120 90c-36 60-72 90-120 90s-84-30-120-90Z" opacity="0.58"/>
+    <path d="M188 258c20-29 42-44 68-44s48 15 68 44c-20 29-42 44-68 44s-48-15-68-44Z" opacity="0.95"/>
+  </g>
+  <circle cx="256" cy="258" r="30" fill="#f7f9ff"/>
+  <path d="M140 422h232" stroke="#7cf7ff" stroke-width="18" stroke-linecap="round" opacity="0.72"/>
+</svg>
