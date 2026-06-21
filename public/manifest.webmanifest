@@ -1,0 +1,17 @@
+{
+  "name": "Speed Reader 3D",
+  "short_name": "Reader 3D",
+  "description": "A cinematic 3D speed-reading trainer with focused RSVP controls.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#070913",
+  "theme_color": "#090b16",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
