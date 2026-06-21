@@ -1,44 +1,43 @@
 # Speed Reader 3D
 
-A cinematic speed-reading trainer built as a lightweight React/Vite app.
+Speed Reader 3D is now set up as a native Android Studio project.
 
-## What it does
+It still has the earlier web files in the repo, but Android Studio can ignore those. The Android app lives in the normal `app/` module and runs as a regular Android app.
 
-Speed Reader 3D turns pasted text into a focused word-by-word reading session with:
+## Open it in Android Studio
 
-- adjustable WPM
-- chunk size control
-- pause boost after punctuation
-- 3D focus tunnel visual mode
-- progress tracking
-- estimated time remaining
-- keyboard controls
-- saved text and settings in local storage
-- distraction-reduced reading screen
+1. Open Android Studio.
+2. Choose **Open** and select the repo folder: `rork-speed-reader-3d`.
+3. Let Android Studio finish **Gradle Sync**.
+4. Press the green **Run** button.
 
-## Run it locally
+If Android Studio asks to install a missing SDK or Gradle component, click **Install** or **Accept**. That is normal on a fresh machine.
+
+## What the Android app does
+
+- Paste or edit text inside the app.
+- Tap **Play** to speed-read word by word.
+- Adjust WPM from 100 to 900.
+- Change chunk size from 1 to 4 words.
+- Turn punctuation pauses on or off.
+- Switch visual modes: Tunnel, Glass, or Plain.
+- Save your text and reading settings automatically.
+
+## Android project files
+
+- `settings.gradle` tells Android Studio this is a Gradle Android project.
+- `build.gradle` defines the Android Gradle Plugin.
+- `app/build.gradle` defines the app module.
+- `app/src/main/AndroidManifest.xml` defines the launchable Android app.
+- `app/src/main/java/com/joemagic/speedreader3d/MainActivity.java` contains the native speed reader app.
+
+## Optional web version
+
+The older React/Vite version is still present. To use that version instead:
 
 ```bash
 npm install
 npm run dev
 ```
 
-Then open the local URL shown in your terminal.
-
-## Build it
-
-```bash
-npm run build
-npm run preview
-```
-
-## Keyboard controls
-
-- Space: play / pause
-- Left arrow: previous word/chunk
-- Right arrow: next word/chunk
-- R: reset session
-
-## Project goal
-
-The goal is not just "words flash on screen." The goal is to make reading feel like a cockpit: calm, fast, focused, and just a little sci-fi.
+For now, Android Studio users should use the native Android project path above.
