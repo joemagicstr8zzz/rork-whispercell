@@ -96,14 +96,10 @@ import com.rork.whispercell.services.WhisperCellForegroundService
 import com.rork.whispercell.viewmodels.WhisperCellViewModel
 
 private enum class MainTab(val label: String, val icon: ImageVector) {
-    Performance("Performance", Icons.Filled.Mic),
-    Review("Review", Icons.Filled.Article),
-    Profiles("Routines", Icons.Filled.Tune),
-    Channels("Outputs", Icons.Filled.Route),
-    Inject("Inject", Icons.Filled.Hub),
-    Logs("Logs", Icons.Filled.Podcasts),
-    Settings("Settings", Icons.Filled.Settings),
-    Help("Help", Icons.Filled.Help)
+    Performance("Live", Icons.Filled.Mic),
+    Review("Test", Icons.Filled.Article),
+    Profiles("Setup", Icons.Filled.Tune),
+    Logs("Logs", Icons.Filled.Podcasts)
 }
 
 private data class PermissionUiState(
@@ -261,11 +257,7 @@ fun HomeScreen(
                 )
                 MainTab.Review -> ReviewScreen(state, viewModel)
                 MainTab.Profiles -> ProfilesScreen(state, viewModel)
-                MainTab.Channels -> ChannelsScreen(state, viewModel)
-                MainTab.Inject -> InjectScreen(state, viewModel)
                 MainTab.Logs -> LogsScreen(state)
-                MainTab.Settings -> SettingsScreen(state, viewModel, permissionStatus, requestPermissions)
-                MainTab.Help -> HelpScreen()
             }
         }
     }
@@ -291,9 +283,9 @@ private fun PerformanceScreen(
         item { SessionHero(state = state) }
         item { PermissionReadinessCard(status = permissionStatus, onRequestPermissions = onRequestPermissions) }
         item {
-            SectionCard(title = "Hands-free controls", icon = Icons.Filled.RadioButtonChecked) {
+            SectionCard(title = "Live performer controls", icon = Icons.Filled.RadioButtonChecked) {
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                    PrimaryControlButton("Start Background Session", Icons.Filled.PlayArrow, Modifier.weight(1f), onStartBackgroundSession)
+                    PrimaryControlButton("Start Live Listening", Icons.Filled.PlayArrow, Modifier.weight(1f), onStartBackgroundSession)
                     DangerControlButton("Panic Stop", Icons.Filled.Emergency, Modifier.weight(1f), onPanicStop)
                 }
                 Spacer(modifier = Modifier.height(10.dp))
@@ -370,7 +362,7 @@ private fun SessionHero(state: PerformanceUiState) {
                 }
             }
             Text(
-                text = if (state.isListeningVisible) "Listening is visibly active. Audio saving is OFF by default." else "No active listening. Start a session intentionally before performance.",
+                text = if (state.isListeningVisible) "Listening is visibly active. Audio saving is OFF by default." else "No active listening. Press Start Live Listening when you are ready to perform.",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurface
             )
@@ -392,7 +384,7 @@ private fun PermissionReadinessCard(status: PermissionUiState, onRequestPermissi
         InfoRow("Microphone hardware", if (status.hasMicrophoneHardware) "Detected" else "Not detected in this environment; Mock Transcript Mode remains available")
         Text(
             text = if (status.hasRequiredRuntimePermissions) {
-                "Ready for live/background listening handoff. Preview still uses Mock Transcript Mode unless a native speech provider is completed."
+                "Ready for live Android speech recognition on supported devices. The cloud emulator may not provide a speech recognizer, so Test mode stays available."
             } else {
                 "WhisperCell will ask before starting a listening session. Review, mock extraction, channels, and Inject testing still work without microphone permission."
             },
@@ -490,19 +482,39 @@ private fun ProfilesScreen(state: PerformanceUiState, viewModel: WhisperCellView
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         item {
-            SectionCard(title = "Active routine", icon = Icons.Filled.Tune) {
-                InfoRow("Routine", state.activeProfile.name)
-                InfoRow("Global Start Phrase", primaryStartPhrase(state))
-                InfoRow("Global Stop Phrase", primaryStopPhrase(state))
+            SectionCard(title = "Routine setup", icon = Icons.Filled.Tune) {
+                InfoRow("Active routine", state.activeProfile.name)
                 Text(
-                    "Start/stop phrases are shared across every routine so you only memorize one pair. This screen only decides what kind of information WhisperCell should extract and publish.",
+                    "One start phrase, one stop phrase, one routine. Outputs and Inject are configured here so there is less to memorize mid-performance.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = primaryStartPhrase(state),
+                    onValueChange = viewModel::updateGlobalStartPhrase,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Start Phrase for every routine") },
+                    singleLine = true
+                )
                 Spacer(modifier = Modifier.height(8.dp))
-                SettingsToggleRow("Review Mode", state.activeProfile.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
-                SettingsToggleRow("Full Automation", state.activeProfile.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
-                InfoRow("Speech engine", state.activeProfile.speechProviderId)
-                InfoRow("Inject output", "Fixed endpoint; payload is sent as the value field")
+                OutlinedTextField(
+                    value = primaryStopPhrase(state),
+                    onValueChange = viewModel::updateGlobalStopPhrase,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Stop Phrase for every routine") },
+                    singleLine = true
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                SettingsToggleRow("Review before publish", state.activeProfile.reviewModeEnabled, viewModel::toggleActiveProfileReviewMode)
+                SettingsToggleRow("Full automation", state.activeProfile.fullAutomationEnabled, viewModel::toggleActiveProfileFullAutomation)
+                SettingsToggleRow("Enable Inject publishing", state.settings.injectEnabled, viewModel::toggleInjectEnabled)
+                SettingsToggleRow("Enable GPT extraction", state.settings.openAiTranscriptionEnabled, viewModel::toggleOpenAiEnabled)
+                InfoRow("Live capture", "Android microphone recognition when available; Test mode for typed/mock transcripts")
+                InfoRow("Inject endpoint", state.lastInjectUrl.ifBlank { "https://11z.co/_w/selection" })
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                    SecondaryControlButton("Test Inject", Icons.Filled.Bolt, Modifier.weight(1f), viewModel::testInject)
+                    PrimaryControlButton("Publish selected", Icons.Filled.Publish, Modifier.weight(1f), viewModel::publishSelectedValue)
+                }
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("Outputs used by this routine", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 state.channels.forEach { channel ->
