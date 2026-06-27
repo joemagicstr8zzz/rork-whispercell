@@ -20,3 +20,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "WhisperCell"
 include(":app")
+include(":screenvault")
